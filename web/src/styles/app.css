@@ -168,6 +168,11 @@ a {
     transform: none;
   }
 }
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}
 @keyframes slidein {
   from {
     opacity: 0;
@@ -1153,6 +1158,9 @@ a {
   min-height: 0;
   background: var(--bg);
   border: 2px solid var(--msg);
+  /* 카드와 함께 나타나되 움직이지는 않습니다 (움직이면 선 위치를 잴 때 어긋남). */
+  animation: appear 0.5s ease backwards;
+  transition: opacity 0.3s ease;
 }
 .react-flow__handle.gh.skill {
   border-color: var(--skill);

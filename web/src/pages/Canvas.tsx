@@ -69,6 +69,14 @@ type ModuleData = { module: ModuleView; dim: boolean; delay: number };
 type SkillData = { skill: ModuleView | null; label: string; icon: string; dim: boolean; delay: number };
 type ScreenData = { module: ModuleView; dim: boolean; delay: number };
 
+/**
+ * 연결점(Handle)은 떠오르며 나타나는 카드(.gnode) 밖에 둡니다. 카드 안에 두면 React Flow 가 애니메이션 도중(아래로 10px)의
+ * 위치를 재어 선 끝이 연결점보다 아래에 붙습니다. 연결점은 카드와 같은 투명도로, 움직임 없이 나타나게만 합니다.
+ */
+function handleStyle(opacity: number, delay: number): { opacity: number; animationDelay: string } {
+  return { opacity, animationDelay: `${delay}s` };
+}
+
 function progressOf(a: AgentView): { pct: number | null; done: number; total: number } {
   const steps = a.task?.steps ?? [];
   const total = steps.length;
@@ -83,33 +91,36 @@ function AgentNode({ data }: NodeProps<Node<AgentData, 'agent'>>) {
   const busy = status === 'working' || status === 'waiting';
   const bar = status === 'working' ? (p.pct === null ? ' indet' : ' shimmer') : status === 'waiting' ? ' warn' : '';
   const width = status === 'working' ? (p.pct === null ? undefined : `${p.pct}%`) : status === 'waiting' ? `${p.pct ?? 100}%` : '0%';
+  const handle = handleStyle(data.dim ? 0.45 : 1, data.delay);
   return (
-    <div className={`gnode gnode-agent${data.selected ? ' selected' : ''}`} style={{ width: 244, height: 128, opacity: data.dim ? 0.45 : 1, animationDelay: `${data.delay}s` }}>
-      <Handle type="target" position={Position.Left} className="gh" isConnectable={false} />
-      <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
-        <Avatar name={a.name} color={a.color} size={28} />
-        <span className="title" style={{ fontSize: 15, fontWeight: 700 }}>
-          {a.name}
-        </span>
-        {a.heartbeat?.enabled ? (
-          <span className="hb-mark" title={`하트비트 · ${intervalLabel(a.heartbeat.everyMinutes)}마다`}>
-            <Icon name="pulse" size={13} stroke={2.2} />
+    <>
+      <Handle type="target" position={Position.Left} className="gh" style={handle} isConnectable={false} />
+      <div className={`gnode gnode-agent${data.selected ? ' selected' : ''}`} style={{ width: 244, height: 128, opacity: handle.opacity, animationDelay: `${data.delay}s` }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+          <Avatar name={a.name} color={a.color} size={28} />
+          <span className="title" style={{ fontSize: 15, fontWeight: 700 }}>
+            {a.name}
           </span>
-        ) : null}
-        <span className="model-chip">{shortModel(a.model, a.modelName)}</span>
-      </span>
-      <StatusLine status={status} detail={busy && p.total > 1 ? `${p.done}/${p.total} 단계` : a.queued > 0 ? `대기열 ${a.queued}` : null} />
-      <span className="sub" style={{ fontSize: 12.5, color: 'var(--text2)' }}>
-        {a.task && busy ? a.task.title : a.task ? `최근: ${a.task.title}` : '작업 없음'}
-      </span>
-      <span className={`progress${bar}`}>
-        <span style={{ width }} />
-      </span>
-      <Handle type="source" position={Position.Right} className="gh skill" isConnectable={false} />
+          {a.heartbeat?.enabled ? (
+            <span className="hb-mark" title={`하트비트 · ${intervalLabel(a.heartbeat.everyMinutes)}마다`}>
+              <Icon name="pulse" size={13} stroke={2.2} />
+            </span>
+          ) : null}
+          <span className="model-chip">{shortModel(a.model, a.modelName)}</span>
+        </span>
+        <StatusLine status={status} detail={busy && p.total > 1 ? `${p.done}/${p.total} 단계` : a.queued > 0 ? `대기열 ${a.queued}` : null} />
+        <span className="sub" style={{ fontSize: 12.5, color: 'var(--text2)' }}>
+          {a.task && busy ? a.task.title : a.task ? `최근: ${a.task.title}` : '작업 없음'}
+        </span>
+        <span className={`progress${bar}`}>
+          <span style={{ width }} />
+        </span>
+      </div>
+      <Handle type="source" position={Position.Right} className="gh skill" style={handle} isConnectable={false} />
       {/* 위임 선(에이전트 ↔ 에이전트)은 오른쪽 위에서 나가고 들어옵니다. 기본 선과 겹치지 않게 아래에 둡니다. */}
-      <Handle type="source" id="dlg-out" position={Position.Right} className="gh dlg" style={{ top: 22, opacity: data.dlg ? 1 : 0 }} isConnectable={false} />
-      <Handle type="target" id="dlg-in" position={Position.Right} className="gh dlg" style={{ top: 22, opacity: data.dlg ? 1 : 0 }} isConnectable={false} />
-    </div>
+      <Handle type="source" id="dlg-out" position={Position.Right} className="gh dlg" style={{ ...handle, top: 22, opacity: data.dlg ? handle.opacity : 0 }} isConnectable={false} />
+      <Handle type="target" id="dlg-in" position={Position.Right} className="gh dlg" style={{ ...handle, top: 22, opacity: data.dlg ? handle.opacity : 0 }} isConnectable={false} />
+    </>
   );
 }
 
@@ -129,45 +140,51 @@ function ModuleNode({ data }: NodeProps<Node<ModuleData, 'module'>>) {
   const m = data.module;
   const failed = m.status === 'failed' || m.status === 'crashed';
   const tone = m.origin === 'agent' ? 'accent' : m.channel ? 'msg' : 'text2';
+  const handle = handleStyle(data.dim ? 0.38 : m.enabled || m.status === 'pending' ? 1 : 0.6, data.delay);
   return (
-    <div
-      className={`gnode${m.status === 'pending' ? ' creating' : ''}${failed ? ' failed' : ''}`}
-      style={{ width: 200, height: 64, opacity: data.dim ? 0.38 : m.enabled || m.status === 'pending' ? 1 : 0.6, animationDelay: `${data.delay}s` }}
-      title={m.statusDetail ?? undefined}
-    >
-      <span className="tile" style={{ width: 32, height: 32, background: tone === 'text2' ? 'var(--raised)' : `var(--${tone}-dim)`, color: `var(--${tone})` }}>
-        <ModuleIcon icon={m.icon} />
-      </span>
-      <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.3 }}>
-        <span className="title">{m.name}</span>
-        <span className="sub" style={{ color: failed ? 'var(--danger)' : m.status === 'pending' ? 'var(--warn)' : undefined }}>
-          {moduleSub(m)}
+    <>
+      <div
+        className={`gnode${m.status === 'pending' ? ' creating' : ''}${failed ? ' failed' : ''}`}
+        style={{ width: 200, height: 64, opacity: handle.opacity, animationDelay: `${data.delay}s` }}
+        title={m.statusDetail ?? undefined}
+      >
+        <span className="tile" style={{ width: 32, height: 32, background: tone === 'text2' ? 'var(--raised)' : `var(--${tone}-dim)`, color: `var(--${tone})` }}>
+          <ModuleIcon icon={m.icon} />
         </span>
-      </span>
-      <Handle type="source" position={Position.Right} className="gh" isConnectable={false} />
-    </div>
+        <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.3 }}>
+          <span className="title">{m.name}</span>
+          <span className="sub" style={{ color: failed ? 'var(--danger)' : m.status === 'pending' ? 'var(--warn)' : undefined }}>
+            {moduleSub(m)}
+          </span>
+        </span>
+      </div>
+      <Handle type="source" position={Position.Right} className="gh" style={handle} isConnectable={false} />
+    </>
   );
 }
 
 function SkillNode({ data }: NodeProps<Node<SkillData, 'skill'>>) {
   const s = data.skill;
   const isNew = s?.isNew ?? false;
+  const handle = handleStyle(data.dim ? 0.38 : 1, data.delay);
   return (
-    <div className={`gnode${isNew ? ' new' : ''}`} style={{ position: 'relative', width: 200, height: 54, opacity: data.dim ? 0.38 : 1, animationDelay: `${data.delay}s` }}>
-      <Handle type="target" position={Position.Left} className={`gh ${isNew ? 'new' : 'skill'}`} isConnectable={false} />
-      <span className="tile" style={{ width: 26, height: 26, borderRadius: 7, background: isNew ? 'var(--accent-dim)' : 'var(--skill-dim)', color: isNew ? 'var(--accent)' : 'var(--skill)' }}>
-        <Icon name={data.icon} size={15} stroke={1.9} />
-      </span>
-      <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.25 }}>
-        <span className="title" style={s ? { fontFamily: 'var(--mono)', fontSize: 12.5 } : undefined}>
-          {data.label}
+    <>
+      <Handle type="target" position={Position.Left} className={`gh ${isNew ? 'new' : 'skill'}`} style={handle} isConnectable={false} />
+      <div className={`gnode${isNew ? ' new' : ''}`} style={{ position: 'relative', width: 200, height: 54, opacity: handle.opacity, animationDelay: `${data.delay}s` }}>
+        <span className="tile" style={{ width: 26, height: 26, borderRadius: 7, background: isNew ? 'var(--accent-dim)' : 'var(--skill-dim)', color: isNew ? 'var(--accent)' : 'var(--skill)' }}>
+          <Icon name={data.icon} size={15} stroke={1.9} />
         </span>
-        <span className="sub" style={{ color: isNew ? 'var(--accent)' : undefined }}>
-          {s ? `${s.createdByName ? `${s.createdByName} 제작 · ` : ''}${relTime(s.installedAt)}` : '내장 도구'}
+        <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.25 }}>
+          <span className="title" style={s ? { fontFamily: 'var(--mono)', fontSize: 12.5 } : undefined}>
+            {data.label}
+          </span>
+          <span className="sub" style={{ color: isNew ? 'var(--accent)' : undefined }}>
+            {s ? `${s.createdByName ? `${s.createdByName} 제작 · ` : ''}${relTime(s.installedAt)}` : '내장 도구'}
+          </span>
         </span>
-      </span>
-      {isNew ? <span className="badge-new">NEW</span> : null}
-    </div>
+        {isNew ? <span className="badge-new">NEW</span> : null}
+      </div>
+    </>
   );
 }
 
@@ -177,20 +194,23 @@ function ScreenNode({ data }: NodeProps<Node<ScreenData, 'screen'>>) {
   const holder = m.screenHolder;
   const failed = m.status === 'failed' || m.status === 'crashed';
   const sub = holder ? `${holder.agentName} 사용 중` : !m.enabled ? '꺼짐' : failed ? '시작 실패' : m.status === 'running' ? '준비됨' : '대기';
+  const handle = handleStyle(data.dim ? 0.38 : m.enabled ? 1 : 0.6, data.delay);
   return (
-    <div className={`gnode${failed ? ' failed' : ''}`} style={{ position: 'relative', width: 200, height: 54, opacity: data.dim ? 0.38 : m.enabled ? 1 : 0.6, animationDelay: `${data.delay}s` }} title={m.statusDetail ?? undefined}>
-      <Handle type="target" position={Position.Left} className="gh skill" isConnectable={false} />
-      <span className="tile" style={{ width: 26, height: 26, borderRadius: 7, background: 'var(--skill-dim)', color: 'var(--skill)' }}>
-        <Icon name="screen" size={15} stroke={1.9} />
-      </span>
-      <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.25 }}>
-        <span className="title">{m.name}</span>
-        <span className="sub" style={{ color: failed ? 'var(--danger)' : holder ? 'var(--skill)' : undefined }}>
-          {sub}
+    <>
+      <Handle type="target" position={Position.Left} className="gh skill" style={handle} isConnectable={false} />
+      <div className={`gnode${failed ? ' failed' : ''}`} style={{ position: 'relative', width: 200, height: 54, opacity: handle.opacity, animationDelay: `${data.delay}s` }} title={m.statusDetail ?? undefined}>
+        <span className="tile" style={{ width: 26, height: 26, borderRadius: 7, background: 'var(--skill-dim)', color: 'var(--skill)' }}>
+          <Icon name="screen" size={15} stroke={1.9} />
         </span>
-      </span>
-      {holder ? <span className="status-dot working" style={{ marginLeft: 'auto', flex: 'none' }} /> : null}
-    </div>
+        <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.25 }}>
+          <span className="title">{m.name}</span>
+          <span className="sub" style={{ color: failed ? 'var(--danger)' : holder ? 'var(--skill)' : undefined }}>
+            {sub}
+          </span>
+        </span>
+        {holder ? <span className="status-dot working" style={{ marginLeft: 'auto', flex: 'none' }} /> : null}
+      </div>
+    </>
   );
 }
 
