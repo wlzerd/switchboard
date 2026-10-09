@@ -24,7 +24,7 @@
 필요한 것: Node.js 22.18 이상 (TypeScript 직접 실행 · node:sqlite · 권한 모델), git (Git 저장소에서 모듈을 설치할 때)
 
 ```bash
-git clone <저장소 주소> switchboard
+git clone https://github.com/wlzerd/switchboard.git
 cd switchboard
 npm install
 cp .env.example .env
