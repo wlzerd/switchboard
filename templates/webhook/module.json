@@ -1,0 +1,18 @@
+{
+  "id": "webhook",
+  "name": "웹훅 수신",
+  "version": "0.1.0",
+  "description": "외부 서비스가 보낸 HTTP 요청을 메시지로 받아 연결된 에이전트에게 넘깁니다.",
+  "kind": "module",
+  "entry": "index.js",
+  "license": "MIT",
+  "author": "",
+  "icon": "link",
+  "channel": { "label": "웹훅" },
+  "env": [
+    { "name": "WEBHOOK_PORT", "required": true, "description": "웹훅을 받을 포트 (예: 8790)" },
+    { "name": "WEBHOOK_SECRET", "required": true, "description": "요청 헤더 X-Webhook-Secret 에 들어와야 하는 값" }
+  ],
+  "permissions": { "net": [], "fsWrite": true, "childProcess": false },
+  "tools": []
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@switchboard/module-discord",
+  "version": "1.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "discord.js": "^14.27.0"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@switchboard/module-telegram",
+  "version": "1.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "grammy": "^1.46.0"
+  }
+}

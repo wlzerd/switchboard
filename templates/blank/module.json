@@ -1,0 +1,26 @@
+{
+  "id": "blank",
+  "name": "빈 모듈",
+  "version": "0.1.0",
+  "description": "도구 하나만 있는 가장 단순한 모듈. 여기서 시작해 도구를 늘리세요.",
+  "kind": "module",
+  "entry": "index.js",
+  "license": "MIT",
+  "author": "",
+  "icon": "cube",
+  "env": [],
+  "permissions": { "net": [], "fsWrite": false, "childProcess": false },
+  "tools": [
+    {
+      "name": "echo",
+      "title": "되돌려주기",
+      "description": "받은 text 를 그대로 돌려줍니다. 모듈이 잘 붙었는지 확인할 때 씁니다.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "minLength": 1 } },
+        "required": ["text"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

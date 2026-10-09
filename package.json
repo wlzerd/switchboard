@@ -1,0 +1,25 @@
+{
+  "name": "switchboard",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "24시간 구동되는 Claude 에이전트 서버. 모듈·스킬·권한·훅을 카드와 선으로 관리합니다.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "workspaces": [
+    "server",
+    "web",
+    "modules/discord",
+    "modules/telegram"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build -w web && npm run build -w server",
+    "start": "npm run start -w server",
+    "test": "npm test -w server && npm test -w web",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "licenses": "node scripts/check-licenses.mjs"
+  }
+}

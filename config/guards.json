@@ -1,0 +1,26 @@
+{
+  "$comment": "기본 금지 조항이 참조하는 목록. 항목을 추가하면 더 넓게 막습니다. 금지 조항 자체는 끌 수 없습니다.",
+  "financeHosts": [
+    "api.stripe.com",
+    "api.paypal.com",
+    "api-m.paypal.com",
+    "api.tosspayments.com",
+    "api.iamport.kr",
+    "api.portone.io",
+    "api.upbit.com",
+    "api.bithumb.com",
+    "api.korbit.co.kr",
+    "api.binance.com",
+    "api.coinbase.com",
+    "api.exchange.coinbase.com",
+    "api.kraken.com",
+    "api.alpaca.markets",
+    "paper-api.alpaca.markets",
+    "openapi.koreainvestment.com",
+    "api.wise.com"
+  ],
+  "secretFileNames": [".env", ".npmrc", ".netrc", ".pgpass", ".git-credentials", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials"],
+  "secretFileExtensions": [".pem", ".key", ".p12", ".pfx", ".keystore", ".jks"],
+  "secretDirectories": [".ssh", ".aws", ".gnupg", ".kube", ".docker"],
+  "shellInterpreters": ["sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "node", "perl", "ruby", "php"]
+}

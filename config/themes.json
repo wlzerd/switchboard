@@ -1,0 +1,31 @@
+{
+  "$comment": "테마 프리셋. 항목을 추가하면 테마 화면에 나타납니다. 색은 #RRGGBB.",
+  "presets": [
+    {
+      "id": "control",
+      "name": "관제실",
+      "tokens": { "bg": "#0B0D11", "panel": "#0F1217", "surface": "#141820", "raised": "#1A1F28", "line": "#232A35", "line2": "#303845", "text": "#E8EAEE", "text2": "#A6AEBB", "text3": "#7D8696", "accent": "#C6F35B", "onAccent": "#0B0D11", "msg": "#6CB6FF", "skill": "#FFB547", "warn": "#FFB547", "danger": "#FF6B6B" }
+    },
+    {
+      "id": "deep",
+      "name": "심해",
+      "tokens": { "bg": "#07111F", "panel": "#0A1626", "surface": "#0E1B2E", "raised": "#13233A", "line": "#1C2C44", "line2": "#27395A", "text": "#E6EEF8", "text2": "#9DB0C8", "text3": "#7C90AA", "accent": "#5CE1E6", "onAccent": "#04121C", "msg": "#8AB4FF", "skill": "#F7B267", "warn": "#F7B267", "danger": "#FF7A7A" }
+    },
+    {
+      "id": "paper",
+      "name": "종이",
+      "tokens": { "bg": "#F4F1EA", "panel": "#EDE9DF", "surface": "#FFFDF8", "raised": "#F0ECE2", "line": "#DED7C8", "line2": "#CBC3B1", "text": "#1E1D1A", "text2": "#55514A", "text3": "#6E695F", "accent": "#2F4BD8", "onAccent": "#FFFFFF", "msg": "#0E7C86", "skill": "#A55400", "warn": "#A55400", "danger": "#C8322F" }
+    },
+    {
+      "id": "contrast",
+      "name": "고대비",
+      "tokens": { "bg": "#000000", "panel": "#000000", "surface": "#0A0A0A", "raised": "#1A1A1A", "line": "#5A5A5A", "line2": "#8A8A8A", "text": "#FFFFFF", "text2": "#E6E6E6", "text3": "#C8C8C8", "accent": "#FFE500", "onAccent": "#000000", "msg": "#66D9FF", "skill": "#FFA640", "warn": "#FFA640", "danger": "#FF5C5C" }
+    },
+    {
+      "id": "ember",
+      "name": "잉걸",
+      "tokens": { "bg": "#16110F", "panel": "#1B1512", "surface": "#221A17", "raised": "#2B221E", "line": "#3A2C27", "line2": "#4A3A33", "text": "#F3E9E4", "text2": "#C2AFA6", "text3": "#A08D84", "accent": "#FF8A5B", "onAccent": "#1A0E08", "msg": "#7FB7FF", "skill": "#FFD166", "warn": "#FFD166", "danger": "#FF5D73" }
+    }
+  ],
+  "default": { "preset": "control", "radius": 12, "font": "plex", "density": 1, "motion": 2 }
+}

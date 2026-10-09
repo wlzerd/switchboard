@@ -1,0 +1,21 @@
+{
+  "id": "telegram",
+  "name": "Telegram",
+  "version": "1.0.0",
+  "description": "Telegram 봇으로 메시지를 받고 보냅니다. 1:1 대화, 그룹에서는 멘션·답장으로 에이전트를 부릅니다.",
+  "kind": "module",
+  "entry": "index.js",
+  "license": "MIT",
+  "author": "Switchboard",
+  "icon": "plane",
+  "channel": { "label": "Telegram" },
+  "env": [
+    { "name": "TELEGRAM_BOT_TOKEN", "required": true, "description": "Telegram @BotFather 에서 발급한 토큰" }
+  ],
+  "permissions": {
+    "net": ["api.telegram.org"],
+    "fsWrite": false,
+    "childProcess": false
+  },
+  "tools": []
+}

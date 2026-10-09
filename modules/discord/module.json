@@ -1,0 +1,42 @@
+{
+  "id": "discord",
+  "name": "Discord",
+  "version": "1.0.0",
+  "description": "Discord 봇으로 메시지를 받고 보냅니다. 멘션이나 DM 으로 에이전트를 부릅니다.",
+  "kind": "module",
+  "entry": "index.js",
+  "license": "MIT",
+  "author": "Switchboard",
+  "icon": "chat",
+  "channel": { "label": "Discord" },
+  "env": [
+    { "name": "DISCORD_BOT_TOKEN", "required": true, "description": "Discord 개발자 포털 > Bot 에서 발급한 토큰" }
+  ],
+  "permissions": {
+    "net": ["discord.com", "*.discord.com", "discordapp.com", "*.discordapp.com", "*.discord.gg", "discord.gg", "*.discordapp.net"],
+    "fsWrite": false,
+    "childProcess": false
+  },
+  "tools": [
+    {
+      "name": "discord_channels",
+      "title": "Discord 채널 목록",
+      "description": "봇이 들어가 있는 서버들의 텍스트 채널 목록을 봅니다. 채널 id 와 #이름을 돌려줍니다.",
+      "input_schema": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "discord_read",
+      "title": "Discord 최근 메시지",
+      "description": "채널의 최근 메시지를 읽습니다. channel 은 채널 id 나 #이름, limit 은 1~50.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "channel": { "type": "string", "minLength": 1 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+        },
+        "required": ["channel"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

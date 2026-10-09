@@ -1,0 +1,27 @@
+# 의존성
+node_modules/
+
+# 빌드 결과
+dist/
+*.tsbuildinfo
+
+# 환경 변수와 비밀값 (예시 파일만 저장소에 둡니다)
+.env
+.env.*
+!.env.example
+
+# 런타임 데이터: DB, 에이전트 작업 폴더, 설치된 모듈, 에이전트가 만든 스킬, 로그
+data/
+
+# 로그·테스트 산출물
+*.log
+coverage/
+
+# OS / 편집기
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 로컬 미리보기 설정 (기기마다 경로가 다름)
+.claude/launch.json

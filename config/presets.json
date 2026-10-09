@@ -1,0 +1,56 @@
+{
+  "$comment": "권한 프리셋. 새 에이전트를 만들 때 고를 수 있습니다. message 는 모든 채널 모듈의 전송 권한(msg.<모듈 id>)에 적용됩니다. 잠긴 항목(secrets.read, self.modify)은 항상 차단이라 여기에 적지 않습니다.",
+  "presets": {
+    "viewer": {
+      "name": "관찰자",
+      "permissions": {
+        "fs.read": { "mode": "allow", "scope": [], "always": [] },
+        "fs.write": { "mode": "deny", "scope": [], "always": [] },
+        "shell.exec": { "mode": "deny", "scope": [], "always": [] },
+        "pkg.install": { "mode": "deny", "scope": [], "always": [] },
+        "web.search": { "mode": "allow", "scope": [], "always": [] },
+        "net.fetch": { "mode": "ask", "scope": [], "always": [] },
+        "skill.create": { "mode": "deny", "scope": [], "always": [] },
+        "module.create": { "mode": "deny", "scope": [], "always": [] },
+        "module.install": { "mode": "deny", "scope": [], "always": [] },
+        "schedule.create": { "mode": "deny", "scope": [], "always": [] }
+      },
+      "message": "deny",
+      "limits": { "tokensPerDay": 200000, "stepsPerTask": 20, "concurrency": 1, "messagesPerMinute": 10 }
+    },
+    "helper": {
+      "name": "도우미",
+      "permissions": {
+        "fs.read": { "mode": "allow", "scope": [], "always": [] },
+        "fs.write": { "mode": "ask", "scope": [], "always": [] },
+        "shell.exec": { "mode": "ask", "scope": [], "always": [] },
+        "pkg.install": { "mode": "ask", "scope": [], "always": [] },
+        "web.search": { "mode": "allow", "scope": [], "always": [] },
+        "net.fetch": { "mode": "allow", "scope": [], "always": [] },
+        "skill.create": { "mode": "ask", "scope": [], "always": [] },
+        "module.create": { "mode": "ask", "scope": [], "always": [] },
+        "module.install": { "mode": "ask", "scope": [], "always": [] },
+        "schedule.create": { "mode": "ask", "scope": [], "always": [] }
+      },
+      "message": "allow",
+      "limits": { "tokensPerDay": 300000, "stepsPerTask": 30, "concurrency": 1, "messagesPerMinute": 20 }
+    },
+    "operator": {
+      "name": "운영자",
+      "permissions": {
+        "fs.read": { "mode": "allow", "scope": [], "always": [] },
+        "fs.write": { "mode": "allow", "scope": [], "always": [] },
+        "shell.exec": { "mode": "allow", "scope": ["git *", "ls *", "cat *", "python *", "python3 *", "node *", "npm test", "npm run *"], "always": [] },
+        "pkg.install": { "mode": "ask", "scope": [], "always": [] },
+        "web.search": { "mode": "allow", "scope": [], "always": [] },
+        "net.fetch": { "mode": "allow", "scope": [], "always": [] },
+        "skill.create": { "mode": "allow", "scope": [], "always": [] },
+        "module.create": { "mode": "allow", "scope": [], "always": [] },
+        "module.install": { "mode": "ask", "scope": [], "always": [] },
+        "schedule.create": { "mode": "allow", "scope": [], "always": [] }
+      },
+      "message": "allow",
+      "limits": { "tokensPerDay": 500000, "stepsPerTask": 40, "concurrency": 2, "messagesPerMinute": 20 }
+    }
+  }
+}
