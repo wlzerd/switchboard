@@ -122,7 +122,7 @@ function CodeModal({ title, url, onClose }: { title: string; url: string; onClos
       {!files && !error ? <span className="spinner" /> : null}
       {files ? (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-          <div role="tablist" aria-label="파일" style={{ flex: '1 1 160px', display: 'flex', flexDirection: 'column', gap: 2, maxHeight: '60vh', overflowY: 'auto' }}>
+          <div role="tablist" aria-label="파일" className="scroll-fade" style={{ flex: '1 1 160px', display: 'flex', flexDirection: 'column', gap: 2, maxHeight: '60vh', overflowY: 'auto' }}>
             {files.map((f, i) => (
               <button key={f.path} type="button" role="tab" aria-selected={i === active} className="hook-item mono" style={{ fontSize: 12 }} aria-pressed={i === active} onClick={() => setActive(i)}>
                 {f.path}

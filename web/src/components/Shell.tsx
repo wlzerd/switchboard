@@ -218,36 +218,38 @@ function Sidebar({ route }: { route: Route }) {
   const settingsAttention = (overview?.modules ?? []).some((m) => (m.enabled && m.settingsMissing.length > 0) || m.envLeft.length > 0);
   return (
     <nav className="sidebar" aria-label="주 메뉴">
-      <div className="nav-list">
-        {NAV.map((n) => (
-          <button key={n.page} type="button" className="nav-item" aria-current={route.page === n.page ? 'page' : undefined} onClick={() => navigate(n.path)}>
-            <Icon name={n.icon} />
-            {n.label}
-            {n.page === 'modules' ? <span className="nav-count">{moduleCount}</span> : null}
-            {n.page === 'projects' ? <span className="nav-count">{projectCount}</span> : null}
-            {n.page === 'settings' && settingsAttention ? <span className="status-dot nav-dot" style={{ background: 'var(--warn)' }} aria-label="확인이 필요한 설정 있음" /> : null}
-          </button>
-        ))}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div className="side-head">
-          <span>에이전트 {agents.length}</span>
-          <button type="button" className="icon-btn" style={{ width: 30, height: 30, border: 0 }} aria-label="새 에이전트" onClick={() => navigate('/hire')}>
-            <Icon name="plus" size={16} stroke={2} />
-          </button>
-        </div>
+      <div className="side-scroll scroll-fade">
         <div className="nav-list">
-          {agents.map((a) => (
-            <button key={a.id} type="button" className="agent-row" aria-current={route.page === 'console' && route.param === a.id} onClick={() => navigate(`/console/${a.id}`)}>
-              <Avatar name={a.name} color={a.color} status={a.paused ? 'paused' : a.status} />
-              <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.3 }}>
-                <span style={{ fontSize: 13.5, fontWeight: 600 }}>{a.name}</span>
-                <span className="sub">
-                  {shortModel(a.model, a.modelName)} · {a.paused ? '일시정지' : STATUS_LABEL[a.status]}
-                </span>
-              </span>
+          {NAV.map((n) => (
+            <button key={n.page} type="button" className="nav-item" aria-current={route.page === n.page ? 'page' : undefined} onClick={() => navigate(n.path)}>
+              <Icon name={n.icon} />
+              {n.label}
+              {n.page === 'modules' ? <span className="nav-count">{moduleCount}</span> : null}
+              {n.page === 'projects' ? <span className="nav-count">{projectCount}</span> : null}
+              {n.page === 'settings' && settingsAttention ? <span className="status-dot nav-dot" style={{ background: 'var(--warn)' }} aria-label="확인이 필요한 설정 있음" /> : null}
             </button>
           ))}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div className="side-head">
+            <span>에이전트 {agents.length}</span>
+            <button type="button" className="icon-btn" style={{ width: 30, height: 30, border: 0 }} aria-label="새 에이전트" onClick={() => navigate('/hire')}>
+              <Icon name="plus" size={16} stroke={2} />
+            </button>
+          </div>
+          <div className="nav-list">
+            {agents.map((a) => (
+              <button key={a.id} type="button" className="agent-row" aria-current={route.page === 'console' && route.param === a.id} onClick={() => navigate(`/console/${a.id}`)}>
+                <Avatar name={a.name} color={a.color} status={a.paused ? 'paused' : a.status} />
+                <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.3 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 600 }}>{a.name}</span>
+                  <span className="sub">
+                    {shortModel(a.model, a.modelName)} · {a.paused ? '일시정지' : STATUS_LABEL[a.status]}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </nav>

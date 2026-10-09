@@ -51,6 +51,54 @@
 
 * {
   box-sizing: border-box;
+  /* 사이트 안의 스크롤바는 숨깁니다. 스크롤할 내용이 있다는 표시는 가장자리 흐림(.scroll-fade)으로 대신합니다. */
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
+/* 스크롤 영역 가장자리 흐림: lib/scrollFade.ts 가 더 볼 내용이 있는 쪽을 data-fade="t b l r" 로 알려 줍니다. */
+@property --fade-t {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --fade-b {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --fade-l {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --fade-r {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+.scroll-fade,
+.codebox {
+  --fade-size: 28px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-t), #000 calc(100% - var(--fade-b)), transparent), linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-t), #000 calc(100% - var(--fade-b)), transparent), linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
+  mask-composite: intersect;
+  transition: --fade-t 0.2s ease, --fade-b 0.2s ease, --fade-l 0.2s ease, --fade-r 0.2s ease;
+}
+:is(.scroll-fade, .codebox)[data-fade~='t'] {
+  --fade-t: var(--fade-size);
+}
+:is(.scroll-fade, .codebox)[data-fade~='b'] {
+  --fade-b: var(--fade-size);
+}
+:is(.scroll-fade, .codebox)[data-fade~='l'] {
+  --fade-l: var(--fade-size);
+}
+:is(.scroll-fade, .codebox)[data-fade~='r'] {
+  --fade-r: var(--fade-size);
 }
 html,
 body,
@@ -438,13 +486,17 @@ a {
 }
 .sidebar {
   flex: 1 1 232px;
+  min-width: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  transition: background-color 0.45s ease;
+}
+/* 메뉴 내용. 좁은 화면에서는 이 안쪽이 가로로 스크롤됩니다 (배경 · 테두리는 바깥 .sidebar 가 그대로 가짐). */
+.side-scroll {
   display: flex;
   flex-direction: column;
   gap: 22px;
   padding: 16px 12px;
-  background: var(--panel);
-  border-right: 1px solid var(--line);
-  transition: background-color 0.45s ease;
 }
 .nav-list {
   display: flex;
@@ -570,6 +622,14 @@ a {
   margin: 0;
   font-size: 15px;
   font-weight: 700;
+}
+.modal > .card-head {
+  flex: none;
+}
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 .section-label {
   font-size: 12px;
@@ -941,7 +1001,10 @@ a {
 .modal {
   width: min(720px, 100%);
   max-height: 86vh;
-  overflow: auto;
+  /* 머리(제목 · 닫기)는 그대로 두고 본문만 스크롤합니다 (흐림이 창 테두리까지 번지지 않게). */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--line2);
   border-radius: var(--radius-lg);
@@ -2216,21 +2279,23 @@ a {
   }
   .sidebar {
     flex: 1 1 100%;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .side-scroll {
+    --fade-size: 48px;
     flex-direction: row;
     align-items: center;
     gap: 6px;
     padding: 6px 10px;
     overflow-x: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    scrollbar-width: none;
   }
-  .sidebar > div {
+  .side-scroll > div {
     flex: none;
     flex-direction: row !important;
     align-items: center;
   }
-  .sidebar .nav-list {
+  .side-scroll .nav-list {
     flex-wrap: nowrap;
   }
   .nav-item,

@@ -676,7 +676,7 @@ function Activity() {
         </div>
       </div>
       {shown.length === 0 ? <div className="empty">기록이 없습니다</div> : null}
-      <ol style={{ maxHeight: 380, overflowY: 'auto' }}>
+      <ol className="scroll-fade" style={{ maxHeight: 380, overflowY: 'auto' }}>
         {shown.map((i) => (
           <li key={i.id}>
             <span className="mono muted" style={{ fontSize: 12 }}>

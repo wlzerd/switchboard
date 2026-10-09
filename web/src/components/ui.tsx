@@ -170,7 +170,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
             <Icon name="x" size={15} />
           </button>
         </div>
-        <div className="card-pad">{children}</div>
+        <div className="card-pad modal-body scroll-fade">{children}</div>
       </div>
     </div>,
     document.body,

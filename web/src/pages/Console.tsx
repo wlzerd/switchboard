@@ -662,12 +662,12 @@ function Chat({ agent, source, threads, onSource }: { agent: AgentView; source: 
           </span>
         ) : null}
         {options.length > 1 ? (
-          <div style={{ marginLeft: 'auto', maxWidth: '100%', overflowX: 'auto' }}>
+          <div className="scroll-fade" style={{ marginLeft: 'auto', maxWidth: '100%', overflowX: 'auto' }}>
             <Seg value={source} options={options} onChange={onSource} label="대화방" />
           </div>
         ) : null}
       </div>
-      <div className="chat-scroll" ref={scroller}>
+      <div className="chat-scroll scroll-fade" ref={scroller}>
         <div className="chat-list" aria-live="polite">
           {more && items.length > 0 ? (
             <button type="button" className="btn sm older-btn" disabled={olderLoading} onClick={loadOlder}>
@@ -1063,7 +1063,7 @@ function AgentPanel({ agent }: { agent: AgentView }) {
         {agent.role ? (
           <>
             <span style={{ alignSelf: 'start' }}>역할</span>
-            <span className="dim" style={{ whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
+            <span className="dim scroll-fade" style={{ whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
               {agent.role}
             </span>
           </>
