@@ -36,8 +36,8 @@ function columnHeight(count: number, height: number, gap: number): number {
 }
 
 /**
- * 에이전트 줄의 순서: 상위 에이전트 바로 아래에 그 하위 에이전트들이 오게 합니다 (위임 선이 짧아지도록).
- * 스택으로 돌아 깊은 상하 관계에도 재귀하지 않습니다. 순환(서버가 막지만)이나 없는 상위를 가리키는 에이전트는 원래 순서로 둡니다.
+ * 에이전트 줄의 순서: 협조 에이전트 바로 아래에 그 에이전트를 협조 에이전트로 둔 에이전트들이 오게 합니다 (위임 선이 짧아지도록).
+ * 스택으로 돌아 깊게 이어져도 재귀하지 않습니다. 서로를 협조 에이전트로 둔 경우(순환)나 없는 에이전트를 가리키면 원래 순서로 둡니다.
  */
 export function orderAgents<T extends { id: string; delegation: DelegationSettings }>(agents: readonly T[]): T[] {
   const ids = new Set(agents.map((a) => a.id));
@@ -112,14 +112,16 @@ export function layoutGraph(o: Overview, saved: Record<string, { x: number; y: n
   const ids = new Set(nodes.map((n) => n.id));
   const edges: LayoutEdge[] = [];
   const seen = new Set<string>();
-  // 지금 위임이 오가는 두 에이전트 사이에는 상위 관계 점선 대신 움직이는 선 하나만 그립니다.
+  // 지금 위임이 오가는 두 에이전트 사이에는 협조 관계 점선 대신 움직이는 선 하나만 그립니다.
+  // 서로를 협조 에이전트로 둔 두 에이전트 사이의 점선도 하나만 그립니다.
   const active = new Set(o.edges.filter((e) => e.kind === 'delegating').map((e) => pairKey(e.from, e.to)));
   for (const e of o.edges) {
     if (!ids.has(e.from) || !ids.has(e.to)) continue;
     if (e.kind === 'delegate' && active.has(pairKey(e.from, e.to))) continue;
     const id = `${e.from}->${e.to}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
+    const dedupe = e.kind === 'delegate' ? `delegate:${pairKey(e.from, e.to)}` : id;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
     edges.push({ id, source: e.from, target: e.to, kind: e.kind });
   }
   return { nodes, edges };

@@ -113,7 +113,7 @@ export function buildOverview(app: App) {
       if (n.permissions.some((p) => (a.permissions[p]?.mode ?? 'ask') !== 'deny')) edges.push({ from: a.id, to: n.id, kind: 'skill' });
     }
   }
-  // 위임: 상위 에이전트 관계(점선)와 지금 진행 중인 위임(움직이는 선)
+  // 위임: 협조 에이전트 관계(점선)와 지금 진행 중인 위임(움직이는 선)
   const ids = new Set(agents.map((a) => a.id));
   for (const a of agents) {
     if (a.delegation.supervisorId && ids.has(a.delegation.supervisorId)) edges.push({ from: a.id, to: a.delegation.supervisorId, kind: 'delegate' });

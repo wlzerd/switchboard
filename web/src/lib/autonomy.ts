@@ -7,35 +7,14 @@ export const DEFAULT_DELEGATION: DelegationSettings = { accept: false, send: fal
 type Delegator = { id: string; name: string; delegation: DelegationSettings };
 
 /**
- * 상위 에이전트로 고를 수 있는 에이전트 (서버 규칙과 같음).
- * 위임 받기를 허용했고, 자기 자신이 아니며, 고르면 상위 관계가 순환하지 않아야 합니다.
- * 순환이 생기는 후보 = 자기 아래(하위의 하위까지)에 있는 에이전트이므로, 아래쪽을 한 번만 훑어 모읍니다 (스택 사용, 에이전트 수에 비례).
+ * 협조 에이전트(맡길 때 먼저 고르는 우선 후보)로 고를 수 있는 에이전트 (서버 규칙과 같음).
+ * 위임 받기를 허용했고 자기 자신이 아니면 됩니다. 위아래 관계가 아니라 서로를 협조 에이전트로 두어도 됩니다.
  */
 export function supervisorChoices<T extends Delegator>(agents: readonly T[], selfId: string | null): T[] {
-  const below = new Set<string>();
-  if (selfId !== null) {
-    const children = new Map<string, string[]>();
-    for (const a of agents) {
-      const sup = a.delegation.supervisorId;
-      if (!sup) continue;
-      const list = children.get(sup);
-      if (list) list.push(a.id);
-      else children.set(sup, [a.id]);
-    }
-    const stack = [selfId];
-    while (stack.length > 0) {
-      const id = stack.pop() as string;
-      for (const c of children.get(id) ?? []) {
-        if (below.has(c)) continue;
-        below.add(c);
-        stack.push(c);
-      }
-    }
-  }
-  return agents.filter((a) => a.id !== selfId && a.delegation.accept && !below.has(a.id));
+  return agents.filter((a) => a.id !== selfId && a.delegation.accept);
 }
 
-/** 이 에이전트를 상위로 둔 에이전트들 (받기를 끌 수 없는 이유) */
+/** 이 에이전트를 협조 에이전트로 둔 에이전트들 (받기를 끌 수 없는 이유) */
 export function dependentsOf<T extends Delegator>(agents: readonly T[], id: string): T[] {
   return agents.filter((a) => a.id !== id && a.delegation.supervisorId === id);
 }
@@ -44,22 +23,20 @@ export function dependentsOf<T extends Delegator>(agents: readonly T[], id: stri
 export function delegationProblem<T extends Delegator>(d: DelegationSettings, agents: readonly T[], selfId: string | null): string | null {
   if (selfId !== null && !d.accept) {
     const deps = dependentsOf(agents, selfId);
-    if (deps.length > 0) return `${deps.map((a) => `'${a.name}'`).join(', ')}의 상위 에이전트라서 위임 받기를 끌 수 없습니다.`;
+    if (deps.length > 0) return `${deps.map((a) => `'${a.name}'`).join(', ')}의 협조 에이전트라서 위임 받기를 끌 수 없습니다.`;
   }
   if (d.supervisorId === null) return null;
-  if (!d.send) return '상위 에이전트에게 일을 넘기려면 위임 요청 보내기를 허용해야 합니다.';
-  if (!supervisorChoices(agents, selfId).some((a) => a.id === d.supervisorId)) {
-    const sup = agents.find((a) => a.id === d.supervisorId);
-    if (!sup) return '고른 상위 에이전트가 없습니다. 삭제되었는지 확인하세요.';
-    if (!sup.delegation.accept) return `'${sup.name}'은(는) 위임 받기가 꺼져 있어 상위 에이전트로 정할 수 없습니다.`;
-    return `'${sup.name}'을(를) 상위로 두면 상위 관계가 순환합니다.`;
-  }
+  if (!d.send) return '협조 에이전트에게 일을 맡기려면 위임 요청 보내기를 허용해야 합니다.';
+  if (d.supervisorId === selfId) return '자기 자신을 협조 에이전트로 정할 수 없습니다.';
+  const sup = agents.find((a) => a.id === d.supervisorId);
+  if (!sup) return '고른 협조 에이전트가 없습니다. 삭제되었는지 확인하세요.';
+  if (!sup.delegation.accept) return `'${sup.name}'은(는) 위임 받기가 꺼져 있어 협조 에이전트로 정할 수 없습니다.`;
   return null;
 }
 
 export function delegationChips(d: DelegationSettings, agents: readonly { id: string; name: string }[]): string[] {
   const out = [`받기 ${d.accept ? '허용' : '미허용'}`, `보내기 ${d.send ? '허용' : '미허용'}`];
-  if (d.supervisorId) out.push(`상위 ${agents.find((a) => a.id === d.supervisorId)?.name ?? '삭제됨'}`);
+  if (d.supervisorId) out.push(`협조 ${agents.find((a) => a.id === d.supervisorId)?.name ?? '삭제됨'}`);
   return out;
 }
 

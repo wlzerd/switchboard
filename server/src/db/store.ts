@@ -42,7 +42,7 @@ export interface DelegationSettings {
   accept: boolean;
   /** 다른 에이전트에게 일을 맡길 수 있는지 */
   send: boolean;
-  /** 권한이 없을 때 일을 넘길 상위 에이전트 */
+  /** 협조 에이전트: 맡길 수 있는 에이전트가 여럿일 때 먼저 고르는 우선 후보 (필드 이름은 예전 그대로) */
   supervisorId: string | null;
 }
 

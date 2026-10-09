@@ -12,6 +12,7 @@ import { evaluatePermission, type PermissionDef } from '../permissions/policy.ts
 import type { SetupNeed } from '../settings/service.ts';
 import { validateJson } from '../tools/json-schema.ts';
 import type { BuiltinTool, Described, ToolEnv } from '../tools/types.ts';
+import { capableAgents, capableLabel } from './capability.ts';
 import { COMPUTER_ACTIONS, HALT_TEXT, TOOLSET_NAME, saveScreenshot, screenSummary, screenTimeoutMs, typedText, type ScreenLocks } from './screen.ts';
 
 export interface ToolUse {
@@ -97,14 +98,22 @@ export class ToolExecutor {
   }
 
   /**
-   * 권한 설정 때문에 막혔을 때 덧붙이는 안내: 위임 요청을 보낼 수 있고 상위 에이전트가 위임을 받으면 그쪽에 맡길 수 있다고 알려 줍니다.
+   * 권한 설정 때문에 막혔을 때 덧붙이는 안내: 그 동작을 실제로 할 수 있는 에이전트(협조 에이전트가 할 수 있으면 먼저)를 알려 줍니다.
+   * 맡을 수 있는 에이전트가 없으면 맡기지 말고 사용자에게 권한 변경을 요청하라고 합니다.
+   * 막힌 동작은 작업에 기억해 두어, 할 수 없는 에이전트에게 넘기려 하면 delegate_task 가 한 번 막습니다.
    * 기본 금지 조항(잠긴 권한) · 훅 차단 · 사용자의 거부에는 붙이지 않습니다 (우회 방지).
    */
-  private escalationHint(agent: AgentRow): string {
-    if (!agent.delegation.send || !agent.delegation.supervisorId) return '';
-    const sup = this.d.store.findAgent(agent.delegation.supervisorId);
-    if (!sup || !sup.delegation.accept) return '';
-    return ` 이 일이 꼭 필요하면 상위 에이전트 '${sup.name}'에게 delegate_task 로 맡길 수 있습니다 (그 에이전트의 권한과 승인 절차가 그대로 적용됩니다).`;
+  private escalationHint(agent: AgentRow, env: ToolEnv, def: PermissionDef, target: string | null): string {
+    if (!agent.delegation.send) return '';
+    env.lastBlock = { permission: def.key, label: def.label, target };
+    const candidates = this.d.store.listAgents().filter((p) => p.id !== agent.id && p.delegation.accept && !env.chain.includes(p.id));
+    if (candidates.length === 0) return '';
+    const workspaceOf = (id: string): string => path.join(this.d.config.dataDir, 'workspaces', id);
+    const capable = capableAgents(candidates, def, target, { requester: agent, preferredId: agent.delegation.supervisorId, workspaceOf });
+    if (capable.length === 0) {
+      return ` 위임을 받는 에이전트 중에도 이 일을 할 수 있는 에이전트가 없습니다 (모두 '${def.label}'이(가) 차단이거나 그 경로에 접근할 수 없음). 꼭 필요하면 사용자에게 권한을 바꿔 달라고 하세요.`;
+    }
+    return ` 이 일을 할 수 있는 에이전트: ${capable.slice(0, 5).map(capableLabel).join(', ')}. 꼭 필요하면 delegate_task 로 그중 하나에게 맡기세요 (맡는 쪽의 권한과 승인 절차가 그대로 적용됩니다).`;
   }
 
   /**
@@ -202,7 +211,7 @@ export class ToolExecutor {
     if (decision.decision === 'deny') {
       this.block(env, agent, '권한 차단', decision.reason, `${tool}(${summary})`);
       this.screenCard(env, summary, false, null);
-      return fail(`실행하지 않았습니다. ${decision.reason}${this.escalationHint(agent)}`);
+      return fail(`실행하지 않았습니다. ${decision.reason}${this.escalationHint(agent, env, def, null)}`);
     }
     const needGrant = decision.decision === 'ask' && !env.grants.has('screen.control');
     const asks = [...(needGrant ? [`${decision.reason} 이번 작업에서 화면 제어를 허락하면 작업이 끝날 때까지 다시 묻지 않습니다.`] : []), ...outcome.reasons];
@@ -334,7 +343,7 @@ export class ToolExecutor {
         if (decision.decision === 'deny') {
           this.block(env, agent, '권한 차단', decision.reason, `${use.name}(${described.summary})`);
           steps.end(stepId, false, '권한 차단');
-          return { content: `실행하지 않았습니다. ${decision.reason}${def.locked ? '' : this.escalationHint(agent)}`, isError: true };
+          return { content: `실행하지 않았습니다. ${decision.reason}${def.locked ? '' : this.escalationHint(agent, env, def, described.target ?? null)}`, isError: true };
         }
         if (decision.decision === 'ask') asks.unshift(decision.reason);
       }

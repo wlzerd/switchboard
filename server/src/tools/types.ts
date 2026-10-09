@@ -1,4 +1,5 @@
 import type { AgentRow, ReportTarget } from '../db/store.ts';
+import type { BlockedAction } from '../agents/capability.ts';
 import type { TaskSink } from '../agents/sink.ts';
 
 /** 다른 에이전트가 맡긴 작업이면, 끝났을 때 결과를 돌려줄 곳 */
@@ -53,6 +54,10 @@ export interface ToolEnv {
   screen: ScreenRun | null;
   /** 이 작업에서 이미 '설정 필요' 카드를 띄운 모듈 (같은 모듈은 한 번만) */
   setupShown: Set<string>;
+  /** 이 작업에서 마지막으로 권한에 막힌 동작 (그 일을 할 수 없는 에이전트에게 맡기려 하면 한 번 막음) */
+  lastBlock: BlockedAction | null;
+  /** 위 확인을 한 번 거친 뒤 그래도 맡기겠다고 다시 보낸 대상 에이전트 */
+  blockWaived: Set<string>;
 }
 
 export interface ScreenRun {

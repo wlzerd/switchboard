@@ -275,13 +275,13 @@ describe('에이전트 간 위임', () => {
     expect(calls.get(a.keyId)![0]!.tools.map((t) => t.name)).not.toContain('delegate_task');
   });
 
-  it('권한이 없어 막히면 상위 에이전트를 알려 주고, 맡긴 일의 결과가 같은 대화로 돌아옵니다', async () => {
-    const boss = addAgent('상위이', { delegation: { accept: true } });
-    const worker = addAgent('하위이', { delegation: { send: true, supervisorId: boss.id }, deny: ['shell.exec'] });
+  it('권한이 없어 막히면 할 수 있는 에이전트(협조 에이전트 먼저)를 알려 주고, 맡긴 일의 결과가 같은 대화로 돌아옵니다', async () => {
+    const boss = addAgent('협조이', { delegation: { accept: true } });
+    const worker = addAgent('요청이', { delegation: { send: true, supervisorId: boss.id }, deny: ['shell.exec'] });
     scripts.set(worker.keyId, (p, n) => {
       if (n === 1) return { tool: { name: 'shell_exec', input: { command: 'ls' } } };
-      if (n === 2) return { tool: { name: 'delegate_task', input: { to: '상위이', task: '작업 폴더에서 ls 를 실행해 파일 목록을 알려 주세요.', reason: '셸 권한 없음' } } };
-      if (n === 3) return { text: '상위이에게 맡겼습니다.' };
+      if (n === 2) return { tool: { name: 'delegate_task', input: { to: '협조이', task: '작업 폴더에서 ls 를 실행해 파일 목록을 알려 주세요.', reason: '셸 권한 없음' } } };
+      if (n === 3) return { text: '협조이에게 맡겼습니다.' };
       return { text: `정리: ${lastUserText(p).includes('a.txt') ? 'a.txt 가 있습니다' : '결과 없음'}` };
     });
     scripts.set(boss.keyId, () => ({ text: '파일 목록: a.txt' }));
@@ -290,12 +290,12 @@ describe('에이전트 간 위임', () => {
     await until(() => calls.get(worker.keyId)?.length === 4 && app.store.latestTask(worker.id)?.status === 'done', '위임 결과까지', 6000);
 
     const workerCalls = calls.get(worker.keyId)!;
-    // 1) 셸이 막힌 결과에 상위 에이전트로 넘기는 길이 적혀 있습니다.
-    expect(lastUserText(workerCalls[1]!)).toContain("상위 에이전트 '상위이'에게 delegate_task 로 맡길 수 있습니다");
-    // 2) 상위 에이전트는 위임 요청을 받았습니다.
-    expect(lastUserText(calls.get(boss.keyId)![0]!)).toContain('[위임 요청 · 하위이]');
+    // 1) 셸이 막힌 결과에 그 일을 할 수 있는 에이전트가 적혀 있고, 협조 에이전트가 맨 앞입니다.
+    expect(lastUserText(workerCalls[1]!)).toMatch(/이 일을 할 수 있는 에이전트: 협조이\((바로 가능|승인 필요) · 협조 에이전트\)/);
+    // 2) 협조 에이전트는 위임 요청을 받았습니다.
+    expect(lastUserText(calls.get(boss.keyId)![0]!)).toContain('[위임 요청 · 요청이]');
     // 3) 결과는 원래 대화(웹 콘솔)로 돌아와 이어서 처리됩니다.
-    expect(lastUserText(workerCalls[3]!)).toContain('[위임 결과 · 상위이 · 완료]');
+    expect(lastUserText(workerCalls[3]!)).toContain('[위임 결과 · 협조이 · 완료]');
     const consoleThread = app.store.listThreads(worker.id).find((t) => t.source === 'console')!;
     const items = app.store.listTimeline(consoleThread.id, 100);
     const card = items.find((i) => i.kind === 'delegate');
@@ -306,9 +306,9 @@ describe('에이전트 간 위임', () => {
     expect(bossTask).toMatchObject({ origin: 'delegation', delegatedBy: worker.id, status: 'done' });
   });
 
-  it('잠긴 권한(기본 금지 조항)에 막힌 경우에는 상위로 넘기라는 안내를 붙이지 않습니다', async () => {
-    const boss = addAgent('상위둘', { delegation: { accept: true } });
-    const worker = addAgent('하위둘', { delegation: { send: true, supervisorId: boss.id } });
+  it('잠긴 권한(기본 금지 조항)에 막힌 경우에는 다른 에이전트에게 넘기라는 안내를 붙이지 않습니다', async () => {
+    const boss = addAgent('협조둘', { delegation: { accept: true } });
+    const worker = addAgent('요청둘', { delegation: { send: true, supervisorId: boss.id } });
     scripts.set(worker.keyId, (_p, n) => (n === 1 ? { tool: { name: 'fs_read', input: { path: '.env' } } } : { text: '못 읽었습니다' }));
     app.manager.enqueue({ agentId: worker.id, source: 'console', sourceLabel: '웹 콘솔', origin: 'console', text: '.env 읽어줘', reply: null });
     await until(() => app.store.latestTask(worker.id)?.status === 'done', '작업 끝');

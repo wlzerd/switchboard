@@ -106,8 +106,8 @@ interface AgentLike {
 }
 
 /**
- * 위임 설정 검사. 상위 에이전트는 있어야 하고, 자기 자신이 아니며, 위임을 받도록 되어 있어야 하고,
- * 상위 → 상위로 따라 올라갔을 때 자기 자신으로 돌아오면(순환) 안 됩니다.
+ * 위임 설정 검사. 협조 에이전트(맡길 때 먼저 고르는 우선 후보)는 위임을 받도록 되어 있어야 하고 자기 자신이 아니어야 합니다.
+ * 위아래 관계가 아니므로 서로를 협조 에이전트로 두어도 됩니다 (같은 요청 안에서 되돌려 맡기는 것은 위임할 때 막음).
  */
 export function validateDelegation(raw: unknown, selfId: string | null, agents: readonly AgentLike[]): DelegationSettings {
   if (raw === undefined || raw === null) return { ...DEFAULT_DELEGATION };
@@ -119,38 +119,20 @@ export function validateDelegation(raw: unknown, selfId: string | null, agents: 
   const accept = d['accept'] === true;
   const send = d['send'] === true;
   if (selfId !== null && !accept) {
-    // 누군가의 상위 에이전트인데 받기를 끄면, 그 에이전트들이 권한 밖의 일을 넘길 곳이 사라집니다.
+    // 누군가의 협조 에이전트인데 받기를 끄면, 그 에이전트들이 먼저 맡길 곳이 사라집니다.
     const dependents = agents.filter((a) => a.id !== selfId && a.delegation.supervisorId === selfId).map((a) => `'${a.name}'`);
     if (dependents.length > 0) {
-      throw new ValidationError('delegation_has_dependents', `${dependents.join(', ')}의 상위 에이전트라서 위임 받기를 끌 수 없습니다. 먼저 그 에이전트의 상위 에이전트를 바꾸거나 없애세요.`);
+      throw new ValidationError('delegation_has_dependents', `${dependents.join(', ')}의 협조 에이전트라서 위임 받기를 끌 수 없습니다. 먼저 그 에이전트의 협조 에이전트를 바꾸거나 없애세요.`);
     }
   }
   const supRaw = d['supervisorId'];
   if (supRaw === undefined || supRaw === null || supRaw === '') return { accept, send, supervisorId: null };
-  if (typeof supRaw !== 'string') throw new ValidationError('delegation_supervisor', `상위 에이전트 id 가 문자열이 아닙니다. 받은 값: ${JSON.stringify(supRaw)}`);
-  if (!send) throw new ValidationError('delegation_supervisor_send', '상위 에이전트에게 일을 넘기려면 위임 요청 보내기를 허용해야 합니다.');
-  if (supRaw === selfId) throw new ValidationError('delegation_supervisor_self', '자기 자신을 상위 에이전트로 정할 수 없습니다.');
-  const byId = new Map(agents.map((a) => [a.id, a]));
-  const sup = byId.get(supRaw);
-  if (!sup) throw new ValidationError('delegation_supervisor_missing', `상위 에이전트 '${supRaw}'이(가) 없습니다. 삭제되었는지 확인하세요.`);
-  if (!sup.delegation.accept) throw new ValidationError('delegation_supervisor_accept', `'${sup.name}'은(는) 위임 받기가 꺼져 있어 상위 에이전트로 정할 수 없습니다. 먼저 '${sup.name}'의 위임 받기를 허용하세요.`);
-  if (selfId !== null) {
-    // 상위로 따라 올라가며 자기 자신이 나오는지 봅니다. 이미 저장된 데이터에 순환이 있어도 멈추도록 방문 기록을 둡니다.
-    const path: string[] = [sup.name];
-    const seen = new Set<string>([sup.id]);
-    let cur: AgentLike | undefined = sup;
-    while (cur && cur.delegation.supervisorId) {
-      const nextId: string = cur.delegation.supervisorId;
-      if (nextId === selfId) {
-        const self = byId.get(selfId);
-        throw new ValidationError('delegation_cycle', `상위 관계가 순환합니다: ${[self?.name ?? selfId, ...path, self?.name ?? selfId].join(' → ')}. 다른 상위 에이전트를 고르세요.`);
-      }
-      if (seen.has(nextId)) break;
-      seen.add(nextId);
-      cur = byId.get(nextId);
-      if (cur) path.push(cur.name);
-    }
-  }
+  if (typeof supRaw !== 'string') throw new ValidationError('delegation_supervisor', `협조 에이전트 id 가 문자열이 아닙니다. 받은 값: ${JSON.stringify(supRaw)}`);
+  if (!send) throw new ValidationError('delegation_supervisor_send', '협조 에이전트에게 일을 맡기려면 위임 요청 보내기를 허용해야 합니다.');
+  if (supRaw === selfId) throw new ValidationError('delegation_supervisor_self', '자기 자신을 협조 에이전트로 정할 수 없습니다.');
+  const sup = agents.find((a) => a.id === supRaw);
+  if (!sup) throw new ValidationError('delegation_supervisor_missing', `협조 에이전트 '${supRaw}'이(가) 없습니다. 삭제되었는지 확인하세요.`);
+  if (!sup.delegation.accept) throw new ValidationError('delegation_supervisor_accept', `'${sup.name}'은(는) 위임 받기가 꺼져 있어 협조 에이전트로 정할 수 없습니다. 먼저 '${sup.name}'의 위임 받기를 허용하세요.`);
   return { accept, send, supervisorId: sup.id };
 }
 

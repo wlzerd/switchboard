@@ -36,6 +36,7 @@ import {
   validateDelegation,
   validateHeartbeat,
 } from './autonomy.ts';
+import { abilityFor, blockedLabel, capableAgents, capableLabel } from './capability.ts';
 import { ToolExecutor } from './executor.ts';
 import { ScreenLocks } from './screen.ts';
 import { permissionsFromPreset, type Preset } from './presets.ts';
@@ -435,7 +436,7 @@ export class AgentManager {
     this.runtimeFor(id).cancelAll('에이전트를 삭제해 작업을 취소했습니다.');
     this.runtimes.delete(id);
     this.d.store.db.tx(() => {
-      // 이 에이전트를 상위로 둔 에이전트들은 상위 없음으로 바꿉니다.
+      // 이 에이전트를 협조 에이전트로 둔 에이전트들은 협조 에이전트 없음으로 바꿉니다.
       for (const a of this.d.store.listAgents()) {
         if (a.delegation.supervisorId === id) this.d.store.updateAgent(a.id, { delegation: { ...a.delegation, supervisorId: null } });
       }
@@ -454,7 +455,7 @@ export class AgentManager {
     const delegation = validateDelegation(raw, id, this.d.store.listAgents());
     const row = this.d.store.updateAgent(id, { delegation });
     const parts = [`받기 ${delegation.accept ? '허용' : '미허용'}`, `보내기 ${delegation.send ? '허용' : '미허용'}`];
-    if (delegation.supervisorId) parts.push(`상위 ${this.d.store.findAgent(delegation.supervisorId)?.name ?? delegation.supervisorId}`);
+    if (delegation.supervisorId) parts.push(`협조 ${this.d.store.findAgent(delegation.supervisorId)?.name ?? delegation.supervisorId}`);
     this.d.bus.activity({ type: 'agent.delegation', category: 'agent', tone: 'pass', who: row.name, text: `위임 설정 · ${parts.join(' · ')}`, agentId: id });
     this.d.bus.emit({ type: 'graph.changed' });
     return row;
@@ -608,6 +609,22 @@ export class AgentManager {
       throw new ValidationError('delegation_rounds', `같은 일을 '${to.name}'에게 이미 ${used}번 맡겼습니다 (결과를 받고 다시 맡기는 왕복은 ${maxRounds}번까지). 직접 마무리하거나 할 수 없다고 답하세요.`);
     }
     const rounds = { ...env.rounds, [to.id]: used + 1 };
+    // 방금 권한에 막힌 일을 그 일을 할 수 없는 에이전트에게 넘기면 맡은 쪽에서도 막혀 헛걸음이 됩니다.
+    // 한 번 막고 할 수 있는 에이전트를 알려 줍니다. 막힌 일과 다른 일이면 같은 요청을 다시 보내 그대로 맡길 수 있습니다.
+    const blocked = env.lastBlock;
+    if (blocked && !env.blockWaived.has(to.id)) {
+      const def = this.permissionDefs().find((d) => d.key === blocked.permission);
+      const workspaceOf = (id: string): string => path.join(this.d.config.dataDir, 'workspaces', id);
+      if (def && !abilityFor(to, def, blocked.target, { requester: workspaceOf(agent.id), peer: workspaceOf(to.id) })) {
+        env.blockWaived.add(to.id);
+        const candidates = this.d.store.listAgents().filter((p) => p.id !== agent.id && p.delegation.accept && !env.chain.includes(p.id));
+        const capable = capableAgents(candidates, def, blocked.target, { requester: agent, preferredId: agent.delegation.supervisorId, workspaceOf }).slice(0, 5);
+        throw new ValidationError(
+          'delegation_unable',
+          `'${to.name}'은(는) 방금 막힌 일(${blockedLabel(blocked, os.homedir())})을 할 수 없습니다 ('${def.label}'이(가) 차단이거나 그 경로에 접근할 수 없음). ${capable.length > 0 ? `할 수 있는 에이전트: ${capable.map(capableLabel).join(', ')}.` : '할 수 있는 에이전트가 없으니 사용자에게 권한을 바꿔 달라고 하세요.'} 막힌 일과 다른 일을 맡기려는 것이면 같은 요청을 한 번 더 보내세요.`,
+        );
+      }
+    }
 
     // 맡긴 쪽 대화에 남는 위임 카드 (결과가 오면 상태가 바뀜)
     const card = env.sink.timeline('delegate', { to: to.id, toName: to.name, task: task.slice(0, 500), reason: reason.slice(0, 300), status: 'sent', round: used + 1, maxRounds });
@@ -628,6 +645,8 @@ export class AgentManager {
     });
     // 이 작업이 누군가에게서 맡은 일이었다면, 결과를 돌려줄 의무는 위임 결과를 받는 후속 작업으로 넘어갑니다.
     env.deferred = true;
+    // 막힌 일을 맡겼으므로 그다음 위임은 따로 봅니다.
+    env.lastBlock = null;
     env.sink.emit({ type: 'edge.pulse', from: agent.id, to: to.id, kind: 'delegate' });
     env.sink.activity({ type: 'delegation.sent', category: 'agent', tone: 'agent', who: agent.name, text: `${to.name}에게 위임 · ${oneLine(task).slice(0, 80)}`, agentId: agent.id });
     this.d.bus.emit({ type: 'graph.changed' });

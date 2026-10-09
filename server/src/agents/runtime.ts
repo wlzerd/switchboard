@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { describeAnthropicError } from '../anthropic/errors.ts';
@@ -356,6 +357,20 @@ export class AgentRuntime {
     }
   }
 
+  /** 에이전트별로 연결된 모듈 · 스킬 이름 (위임 목록에 보여 줄 '도구'). 꺼졌거나 승인 전인 것은 뺍니다. */
+  private peerTools(): Map<string, string[]> {
+    const store = this.d.store;
+    const out = new Map<string, string[]>();
+    for (const l of store.listAgentModules()) {
+      const m = store.findModule(l.moduleId);
+      if (!m || !m.enabled || m.status === 'pending' || m.status === 'rejected') continue;
+      const list = out.get(l.agentId) ?? [];
+      list.push(m.manifest.name);
+      out.set(l.agentId, list);
+    }
+    return out;
+  }
+
   /** 도구 목록: 권한이 모두 차단인 내장 도구는 빼고, 연결된 모듈·스킬 도구를 더합니다. 이름순으로 고정해 캐시를 지킵니다. */
   private buildTools(agent: AgentRow, model: ModelSummary | null, level: number, quiet: boolean): { tools: unknown[]; hadServer: boolean; hadComputer: boolean } {
     const hasChannel = this.d.store.listAgentModules(agent.id).some((l) => {
@@ -452,6 +467,8 @@ export class AgentRuntime {
       deferred: false,
       grants: new Set<string>(),
       setupShown: new Set<string>(),
+      lastBlock: null,
+      blockWaived: new Set<string>(),
       screen: null,
       sink,
     };
@@ -498,6 +515,8 @@ export class AgentRuntime {
           channels: links.filter((m) => m.manifest.channel && m.manifest.channel.send !== false && m.enabled),
           connected: links,
           peers: store.listAgents(),
+          peerTools: this.peerTools(),
+          home: os.homedir(),
           rootDir: config.rootDir,
           screen: hadComputer,
           projects: this.d.projectsFor(agent),

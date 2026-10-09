@@ -148,32 +148,26 @@ describe('validateDelegation', () => {
     expect(codeOf(() => validateDelegation('x', null, []))).toBe('delegation_type');
   });
 
-  it('상위를 정하려면 보내기가 허용이어야 합니다', () => {
+  it('협조 에이전트를 정하려면 보내기가 허용이어야 합니다', () => {
     const list = [ag('boss')];
     expect(codeOf(() => validateDelegation({ send: false, supervisorId: 'boss' }, null, list))).toBe('delegation_supervisor_send');
     expect(validateDelegation({ send: true, supervisorId: 'boss' }, null, list).supervisorId).toBe('boss');
   });
 
-  it('자기 자신 · 없는 에이전트 · 받기를 끈 에이전트는 상위가 될 수 없습니다', () => {
+  it('자기 자신 · 없는 에이전트 · 받기를 끈 에이전트는 협조 에이전트가 될 수 없습니다', () => {
     const list = [ag('me'), ag('off', { accept: false })];
     expect(codeOf(() => validateDelegation({ send: true, supervisorId: 'me' }, 'me', list))).toBe('delegation_supervisor_self');
     expect(codeOf(() => validateDelegation({ send: true, supervisorId: 'ghost' }, 'me', list))).toBe('delegation_supervisor_missing');
     expect(codeOf(() => validateDelegation({ send: true, supervisorId: 'off' }, 'me', list))).toBe('delegation_supervisor_accept');
   });
 
-  it('순환은 경로를 보여 주며 거절하고, 이미 저장된 순환이 있어도 멈춥니다', () => {
+  it('위아래 관계가 아니므로 서로를 협조 에이전트로 두어도 됩니다 (되돌려 맡기기는 위임할 때 막음)', () => {
     const list = [ag('a', { supervisorId: 'b' }), ag('b', { supervisorId: 'c' }), ag('c')];
-    try {
-      validateDelegation({ accept: true, send: true, supervisorId: 'a' }, 'c', list);
-      expect.unreachable();
-    } catch (err) {
-      expect((err as Error).message).toContain('C → A → B → C');
-    }
-    const looped = [ag('x', { supervisorId: 'y' }), ag('y', { supervisorId: 'x' }), ag('me')];
-    expect(validateDelegation({ accept: true, send: true, supervisorId: 'x' }, 'me', looped).supervisorId).toBe('x');
+    expect(validateDelegation({ accept: true, send: true, supervisorId: 'a' }, 'c', list).supervisorId).toBe('a');
+    expect(validateDelegation({ accept: true, send: true, supervisorId: 'a' }, 'b', [ag('a', { supervisorId: 'b' }), ag('b')]).supervisorId).toBe('a');
   });
 
-  it('누군가의 상위인 에이전트는 받기를 끌 수 없고, 새 에이전트에는 이 검사가 없습니다', () => {
+  it('누군가의 협조 에이전트는 받기를 끌 수 없고, 새 에이전트에는 이 검사가 없습니다', () => {
     const list = [ag('boss'), ag('w1', { supervisorId: 'boss' }), ag('w2', { supervisorId: 'boss' })];
     try {
       validateDelegation({ accept: false, send: true }, 'boss', list);

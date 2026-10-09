@@ -18,60 +18,49 @@ import type { DelegationSettings, Overview } from '../src/lib/types';
 
 const ag = (id: string, d: Partial<DelegationSettings> = {}) => ({ id, name: id.toUpperCase(), delegation: { accept: true, send: true, supervisorId: null, ...d } });
 
-describe('상위 에이전트 후보', () => {
+describe('협조 에이전트 후보', () => {
   it('새 에이전트는 받기를 허용한 모든 에이전트를 고를 수 있습니다', () => {
     const list = [ag('a'), ag('b', { accept: false }), ag('c')];
     expect(supervisorChoices(list, null).map((a) => a.id)).toEqual(['a', 'c']);
   });
 
-  it('자기 자신과, 고르면 순환하는 에이전트(바로 아래 · 몇 단계 아래)는 뺍니다', () => {
-    // a ← b ← c (c 의 상위는 b, b 의 상위는 a)
-    const list = [ag('a'), ag('b', { supervisorId: 'a' }), ag('c', { supervisorId: 'b' }), ag('d')];
-    expect(supervisorChoices(list, 'a').map((x) => x.id)).toEqual(['d']);
-    expect(supervisorChoices(list, 'b').map((x) => x.id)).toEqual(['a', 'd']);
-    expect(supervisorChoices(list, 'c').map((x) => x.id)).toEqual(['a', 'b', 'd']);
-  });
-
-  it('저장된 데이터에 이미 순환이 있어도 멈춥니다', () => {
-    const list = [ag('x', { supervisorId: 'y' }), ag('y', { supervisorId: 'x' }), ag('me')];
-    expect(supervisorChoices(list, 'me').map((a) => a.id)).toEqual(['x', 'y']);
-  });
-
-  it('긴 사슬도 재귀 없이 끝까지 따라갑니다', () => {
-    const n = 20_000;
-    const list = Array.from({ length: n }, (_, i) => ag(`n${i}`, { supervisorId: i === 0 ? null : `n${i - 1}` }));
-    // 맨 위(n0)의 상위로 맨 아래(n19999)를 고르면 순환입니다.
-    expect(supervisorChoices(list, 'n0').some((a) => a.id === `n${n - 1}`)).toBe(false);
+  it('자기 자신만 빼고, 위아래 관계가 아니므로 나를 협조 에이전트로 둔 에이전트도 고를 수 있습니다', () => {
+    // b 는 a 를, c 는 b 를 협조 에이전트로 둠
+    const list = [ag('a'), ag('b', { supervisorId: 'a' }), ag('c', { supervisorId: 'b' }), ag('d', { accept: false })];
+    expect(supervisorChoices(list, 'a').map((x) => x.id)).toEqual(['b', 'c']);
+    expect(supervisorChoices(list, 'b').map((x) => x.id)).toEqual(['a', 'c']);
   });
 });
 
 describe('위임 설정 검사', () => {
   const list = [ag('boss'), ag('w1', { supervisorId: 'boss' }), ag('w2', { supervisorId: 'boss' }), ag('lone', { accept: false })];
 
-  it('누군가의 상위인데 받기를 끄면 그 에이전트들을 짚어 거절합니다', () => {
+  it('누군가의 협조 에이전트인데 받기를 끄면 그 에이전트들을 짚어 거절합니다', () => {
     expect(dependentsOf(list, 'boss').map((a) => a.id)).toEqual(['w1', 'w2']);
-    expect(delegationProblem({ accept: false, send: true, supervisorId: null }, list, 'boss')).toBe("'W1', 'W2'의 상위 에이전트라서 위임 받기를 끌 수 없습니다.");
+    expect(delegationProblem({ accept: false, send: true, supervisorId: null }, list, 'boss')).toBe("'W1', 'W2'의 협조 에이전트라서 위임 받기를 끌 수 없습니다.");
     expect(delegationProblem({ accept: true, send: true, supervisorId: null }, list, 'boss')).toBeNull();
   });
 
-  it('새 에이전트(selfId=null)는 아래에 둔 에이전트가 없으니 받기를 꺼도 됩니다', () => {
+  it('새 에이전트(selfId=null)는 자기를 협조 에이전트로 둔 에이전트가 없으니 받기를 꺼도 됩니다', () => {
     expect(delegationProblem({ accept: false, send: false, supervisorId: null }, list, null)).toBeNull();
   });
 
-  it('상위를 정하려면 보내기가 허용이어야 합니다', () => {
+  it('협조 에이전트를 정하려면 보내기가 허용이어야 합니다', () => {
     expect(delegationProblem({ accept: false, send: false, supervisorId: 'boss' }, list, null)).toContain('위임 요청 보내기를 허용');
     expect(delegationProblem({ accept: false, send: true, supervisorId: 'boss' }, list, null)).toBeNull();
   });
 
-  it('받기를 끈 에이전트 · 없는 에이전트 · 순환을 각각 다른 문구로', () => {
+  it('받기를 끈 에이전트 · 없는 에이전트 · 자기 자신을 각각 다른 문구로, 서로 지정은 허용', () => {
     expect(delegationProblem({ accept: true, send: true, supervisorId: 'lone' }, list, null)).toContain("'LONE'은(는) 위임 받기가 꺼져");
     expect(delegationProblem({ accept: true, send: true, supervisorId: 'ghost' }, list, null)).toContain('없습니다');
-    expect(delegationProblem({ accept: true, send: true, supervisorId: 'w1' }, list, 'boss')).toContain('순환');
+    expect(delegationProblem({ accept: true, send: true, supervisorId: 'boss' }, list, 'boss')).toBe('자기 자신을 협조 에이전트로 정할 수 없습니다.');
+    // w1 은 boss 를 협조 에이전트로 두었지만, boss 도 w1 을 협조 에이전트로 둘 수 있습니다.
+    expect(delegationProblem({ accept: true, send: true, supervisorId: 'w1' }, list, 'boss')).toBeNull();
   });
 
-  it('칩: 상위가 지워졌으면 삭제됨', () => {
+  it('칩: 협조 에이전트가 지워졌으면 삭제됨', () => {
     expect(delegationChips({ accept: true, send: false, supervisorId: null }, list)).toEqual(['받기 허용', '보내기 미허용']);
-    expect(delegationChips({ accept: false, send: true, supervisorId: 'gone' }, list)).toEqual(['받기 미허용', '보내기 허용', '상위 삭제됨']);
+    expect(delegationChips({ accept: false, send: true, supervisorId: 'gone' }, list)).toEqual(['받기 미허용', '보내기 허용', '협조 삭제됨']);
   });
 });
 
@@ -165,12 +154,12 @@ describe('하트비트 설정 검사', () => {
 });
 
 describe('에이전트 줄 순서', () => {
-  it('상위 바로 아래에 하위들이 원래 순서대로 옵니다', () => {
+  it('협조 에이전트 바로 아래에 그 에이전트를 둔 에이전트들이 원래 순서대로 옵니다', () => {
     const list = [ag('w1', { supervisorId: 'boss' }), ag('solo'), ag('boss'), ag('w2', { supervisorId: 'boss' }), ag('sub', { supervisorId: 'w1' })];
     expect(orderAgents(list).map((a) => a.id)).toEqual(['solo', 'boss', 'w1', 'sub', 'w2']);
   });
 
-  it('자기 자신 · 없는 에이전트를 상위로 가리키면 맨 위 줄로, 순환은 원래 순서대로 뒤에', () => {
+  it('자기 자신 · 없는 에이전트를 가리키면 맨 위 줄로, 서로 가리키면 원래 순서대로 뒤에', () => {
     const list = [ag('x', { supervisorId: 'y' }), ag('self', { supervisorId: 'self' }), ag('y', { supervisorId: 'x' }), ag('orphan', { supervisorId: 'ghost' })];
     expect(orderAgents(list).map((a) => a.id)).toEqual(['self', 'orphan', 'x', 'y']);
   });
@@ -196,13 +185,17 @@ describe('위임 선', () => {
       edges,
     }) as unknown as Overview;
 
-  it('지금 위임이 오가는 사이에는 상위 관계 점선 대신 움직이는 선 하나만 (방향과 관계없이)', () => {
+  it('지금 위임이 오가는 사이에는 협조 관계 점선 대신 움직이는 선 하나만 (방향과 관계없이)', () => {
     expect(layoutGraph(overview([{ from: 'a', to: 'b', kind: 'delegate' }])).edges.map((e) => e.kind)).toEqual(['delegate']);
     expect(layoutGraph(overview([{ from: 'a', to: 'b', kind: 'delegate' }, { from: 'a', to: 'b', kind: 'delegating' }])).edges.map((e) => e.kind)).toEqual(['delegating']);
-    // 상위(b)가 하위(a)에게 맡긴 경우: 방향이 반대여도 같은 사이로 봅니다.
+    // 협조 에이전트(b)가 거꾸로 a 에게 맡긴 경우: 방향이 반대여도 같은 사이로 봅니다.
     expect(layoutGraph(overview([{ from: 'a', to: 'b', kind: 'delegate' }, { from: 'b', to: 'a', kind: 'delegating' }])).edges.map((e) => `${e.source}>${e.target}:${e.kind}`)).toEqual(['b>a:delegating']);
-    // 다른 사이의 위임은 상위 관계 선을 지우지 않습니다.
+    // 다른 사이의 위임은 협조 관계 선을 지우지 않습니다.
     expect(layoutGraph(overview([{ from: 'a', to: 'b', kind: 'delegate' }, { from: 'c', to: 'b', kind: 'delegating' }])).edges).toHaveLength(2);
+  });
+
+  it('서로를 협조 에이전트로 둔 두 에이전트 사이의 점선은 하나만', () => {
+    expect(layoutGraph(overview([{ from: 'a', to: 'b', kind: 'delegate' }, { from: 'b', to: 'a', kind: 'delegate' }])).edges.map((e) => e.kind)).toEqual(['delegate']);
   });
 
   it('곡선은 가까우면 36px, 멀수록 커지다 120px 에서 멈춥니다 (위아래 대칭)', () => {

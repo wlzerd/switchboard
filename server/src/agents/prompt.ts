@@ -4,6 +4,7 @@ import type { AgentRow, ModuleRow } from '../db/store.ts';
 import { GUARD_DEFS } from '../guards/guards.ts';
 import type { PermissionDef } from '../permissions/policy.ts';
 import { SILENT_TOKEN } from './autonomy.ts';
+import { abilitySummary } from './capability.ts';
 
 const MODE_LABEL = { allow: '허용', ask: '확인 후 실행', deny: '차단' } as const;
 
@@ -30,6 +31,10 @@ export interface PromptInput {
   connected: ModuleRow[];
   /** 같은 서버의 에이전트들 (위임 대상 목록용) */
   peers: readonly AgentRow[];
+  /** 에이전트별로 연결된 모듈 · 스킬 이름 (위임 목록의 '도구') */
+  peerTools?: ReadonlyMap<string, readonly string[]>;
+  /** 경로를 ~ 로 줄여 보여 줄 때 쓰는 홈 폴더 */
+  home?: string;
   rootDir: string;
   /** 이번 요청에 화면 제어 도구 묶음이 열렸는지 */
   screen?: boolean;
@@ -51,19 +56,24 @@ function projectsSection(projects: readonly { name: string; path: string; note: 
 const firstLine = (s: string): string => s.trim().split('\n')[0]?.slice(0, 120) ?? '';
 
 /** 위임 · 위임 받기 안내. 설정이 꺼져 있으면 빈 문자열. */
-function delegationSection(agent: AgentRow, peers: readonly AgentRow[]): string {
+function delegationSection(agent: AgentRow, input: Pick<PromptInput, 'peers' | 'defs' | 'peerTools' | 'home'>): string {
   const parts: string[] = [];
   if (agent.delegation.send) {
-    const sup = agent.delegation.supervisorId ? peers.find((p) => p.id === agent.delegation.supervisorId) : undefined;
-    const targets = peers.filter((p) => p.id !== agent.id && p.delegation.accept);
-    const list = targets.length === 0 ? ['- 지금 위임을 받는 에이전트가 없습니다.'] : targets.map((p) => `- ${p.name}${p.id === sup?.id ? ' (상위 에이전트)' : ''}: ${firstLine(p.role) || '역할 설명 없음'}`);
-    const escalate = sup && sup.delegation.accept ? `상위 에이전트 '${sup.name}'에게` : '위 목록의 에이전트에게';
+    const pref = agent.delegation.supervisorId ? input.peers.find((p) => p.id === agent.delegation.supervisorId && p.delegation.accept) : undefined;
+    const targets = input.peers.filter((p) => p.id !== agent.id && p.delegation.accept);
+    // 역할 첫 줄과 할 수 있는 일(권한 · 폴더 · 도구)을 함께 보여 줘서, 그 일을 실제로 할 수 있는 에이전트를 고르게 합니다.
+    const list =
+      targets.length === 0
+        ? ['- 지금 위임을 받는 에이전트가 없습니다.']
+        : targets.map((p) => `- ${p.name}${p.id === pref?.id ? ' (협조 에이전트 · 우선 후보)' : ''}: ${firstLine(p.role) || '역할 설명 없음'}\n  ${abilitySummary(p, input.defs, input.peerTools?.get(p.id) ?? [], input.home ?? '')}`);
     parts.push(
       [
         '## 위임 (다른 에이전트에게 맡기기)',
         ...list,
         '- 위 목록에 그 일을 역할로 맡은 에이전트가 있으면 직접 하지 말고 delegate_task 로 그 에이전트에게 맡긴다. 네 역할에 맞는 일은 직접 한다.',
-        `- 권한 설정 때문에 직접 할 수 없는 일은 ${escalate} delegate_task 로 맡길 수 있다. 맡는 쪽의 권한 · 훅 · 승인 절차가 그대로 적용된다.`,
+        '- 맡길 에이전트는 역할과 할 수 있는 일(권한 · 폴더 · 도구)을 보고 고른다. 그 일에 필요한 권한이 "못 함"인 에이전트에게는 맡기지 않는다.',
+        ...(pref ? [`- 맡을 수 있는 에이전트가 여럿이면 협조 에이전트 '${pref.name}'을(를) 먼저 고른다. 협조 에이전트가 할 수 없는 일이면 할 수 있는 다른 에이전트에게 맡긴다.`] : []),
+        '- 권한 설정 때문에 직접 할 수 없는 일도, 그 일을 할 수 있는 에이전트에게 delegate_task 로 맡길 수 있다. 맡는 쪽의 권한 · 훅 · 승인 절차가 그대로 적용된다.',
         '- 서로 다른 일이 여러 건이면 건마다 따로 맡긴다. 결과는 건마다 이 대화로 돌아온다.',
         '- 기본 금지 조항에 걸렸거나 사용자가 거부한 일은 다른 에이전트에게 맡겨 우회하지 않는다.',
         '- 맡긴 뒤에는 결과가 이 대화로 돌아올 때까지 기다리고, 결과가 오면 그것으로 원래 요청을 마무리한다.',
@@ -142,7 +152,7 @@ export function buildSystemPrompt(input: PromptInput): string {
     moduleLines.length > 0 ? `## 연결된 모듈·스킬\n${moduleLines.join('\n')}` : '',
     `## 권한\n${perms}`,
     `## 기본 금지 조항 (끌 수 없음)\n${GUARD_DEFS.map((g) => `- ${g.name}`).join('\n')}`,
-    delegationSection(agent, input.peers),
+    delegationSection(agent, input),
     quietLines,
     canBuild ? `## 모듈·스킬 제작 가이드\n새 기능이 필요하면 아래 가이드에 따라 스킬(skill_create)이나 모듈(module_create)을 만든다.\n\n${loadModuleGuide(input.rootDir)}` : '',
   ];

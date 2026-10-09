@@ -104,3 +104,65 @@ describe('설정 화면 주소 · 안내', () => {
     expect(parseManifest({ ...base, env: [{ name: 'X_TOKEN', url: 'https://example.com/new' }] }, 'test').env[0]?.url).toBe('https://example.com/new');
   });
 });
+
+describe('협조 에이전트(우선 후보)와 할 수 있는 에이전트 찾기', () => {
+  // 후보 목록을 정확히 보려고 에이전트를 새로 띄운 환경에서 시험합니다.
+  let h2: Harness;
+  beforeAll(async () => {
+    h2 = await startHarness();
+  });
+  afterAll(async () => {
+    await h2.close();
+  });
+  const allow = { mode: 'allow' as const, scope: [], always: [] };
+  const ask = { mode: 'ask' as const, scope: [], always: [] };
+
+  it('프롬프트에 역할과 할 수 있는 일을, 막히면 그 일을 할 수 있는 에이전트를 알려 주고, 못 하는 에이전트에게 맡기면 한 번 막습니다', async () => {
+    const dev = h2.addAgent('개발이', { delegation: { accept: true }, permissions: { 'shell.exec': allow } });
+    h2.app.store.updateAgent(dev.id, { role: '코드 작성 및 유지보수' });
+    const partner = h2.addAgent('협조가', { delegation: { accept: true }, deny: ['shell.exec'], paused: true });
+    h2.app.store.updateAgent(partner.id, { role: '메일 정리' });
+    h2.addAgent('검토이', { delegation: { accept: true }, permissions: { 'shell.exec': ask } });
+    h2.addAgent('손님이', { permissions: { 'shell.exec': allow } });
+    const a = h2.addAgent('요청이', { delegation: { send: true, supervisorId: partner.id }, deny: ['shell.exec'] });
+    h2.scripts.set(a.keyId, (_p, call) => {
+      if (call === 1) return { tool: { name: 'shell_exec', input: { command: 'npm test' } } };
+      if (call === 2 || call === 3) return { tool: { name: 'delegate_task', input: { to: '협조가', task: '저장소에서 npm test 를 돌려 결과를 알려 주세요', reason: '셸 권한 없음' } } };
+      return { text: '맡겼습니다' };
+    });
+    const task = h2.app.manager.enqueue({ agentId: a.id, source: 'console', sourceLabel: '웹 콘솔', origin: 'console', text: '테스트 돌려줘', reply: null });
+    await until(() => h2.app.store.getTask(task.id).status === 'done', '작업 끝');
+    const calls = h2.calls.get(a.keyId)!;
+
+    // 1) 위임 목록: 역할 + 할 수 있는 일, 협조 에이전트 표시와 우선 규칙. 위임을 받지 않는 에이전트는 없음.
+    const system = calls[0]!.system[0]!.text;
+    expect(system).toMatch(/- 개발이: 코드 작성 및 유지보수\n {2}할 수 있음: [^\n]*셸 명령 허용/);
+    expect(system).toMatch(/- 협조가 \(협조 에이전트 · 우선 후보\): 메일 정리\n {2}할 수 있음: [^\n]* · 못 함: [^\n]*셸 명령/);
+    expect(system).toContain("맡을 수 있는 에이전트가 여럿이면 협조 에이전트 '협조가'을(를) 먼저 고른다.");
+    expect(system).not.toContain('- 손님이');
+
+    // 2) 셸이 막히면: 할 수 없는 협조 에이전트는 빼고, 바로 가능 → 승인 필요 순.
+    expect(lastUserText(calls[1]!)).toContain('이 일을 할 수 있는 에이전트: 개발이(바로 가능), 검토이(승인 필요).');
+
+    // 3) 막힌 일을 못 하는 에이전트에게 맡기면 한 번 막고 후보를 알려 줌 → 같은 요청을 다시 보내면 맡김.
+    const rejected = lastUserText(calls[2]!);
+    expect(rejected).toContain("'협조가'은(는) 방금 막힌 일(셸 명령 · npm test)을 할 수 없습니다");
+    expect(rejected).toContain('할 수 있는 에이전트: 개발이(바로 가능), 검토이(승인 필요).');
+    expect(lastUserText(calls[3]!)).toContain("'협조가'에게 맡겼습니다");
+    expect(h2.app.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM tasks WHERE agent_id = :id', { id: partner.id })?.n).toBe(1);
+  });
+
+  it('위임을 받는 에이전트가 모두 그 일을 못 하면, 맡기지 말고 사용자에게 권한 변경을 요청하라고 안내합니다', async () => {
+    const h3 = await startHarness();
+    try {
+      h3.addAgent('메일이', { delegation: { accept: true }, deny: ['shell.exec'] });
+      const a = h3.addAgent('혼자서', { delegation: { send: true }, deny: ['shell.exec'] });
+      h3.scripts.set(a.keyId, (_p, call) => (call === 1 ? { tool: { name: 'shell_exec', input: { command: 'make' } } } : { text: '못 합니다' }));
+      const task = h3.app.manager.enqueue({ agentId: a.id, source: 'console', sourceLabel: '웹 콘솔', origin: 'console', text: '빌드', reply: null });
+      await until(() => h3.app.store.getTask(task.id).status === 'done', '작업 끝');
+      expect(lastUserText(h3.calls.get(a.keyId)![1]!)).toContain("위임을 받는 에이전트 중에도 이 일을 할 수 있는 에이전트가 없습니다 (모두 '셸 명령'이(가) 차단이거나 그 경로에 접근할 수 없음). 꼭 필요하면 사용자에게 권한을 바꿔 달라고 하세요.");
+    } finally {
+      await h3.close();
+    }
+  });
+});
