@@ -1,4 +1,5 @@
 import { ValidationError } from '../errors.ts';
+import { linearProblem, regexRunner } from './safe-regex.ts';
 import { HOOK_EVENTS, type HookAction, type HookCtx, type HookEvent } from './types.ts';
 
 export type ConditionOp =
@@ -185,8 +186,15 @@ export function evalCondition(c: Condition, ctx: HookCtx, rt: RuleRuntime): Cond
     case 'not_matches': {
       const re = parseRegex(value);
       if (typeof re === 'string') return { matched: false, skipped: re };
-      const hit = actual !== null && re.test(text);
-      return { matched: c.op === 'matches' ? hit : !hit };
+      if (actual === null) return { matched: c.op === 'not_matches' };
+      // 사용자가 쓴 정규식은 시간 제한을 두고 별도 스레드에서 돌립니다 (서버가 멈추지 않게).
+      const r = regexRunner.test(re.source, re.flags, text);
+      if (!r.ok) {
+        // 시간 안에 판단하지 못하면 조건이 맞는 것으로 봅니다: 차단 · 확인 훅을 느린 입력으로 피해 가지 못하게.
+        if (r.timedOut) return { matched: true, skipped: `${r.error}. 조건이 맞는 것으로 보고 처리했습니다.` };
+        return { matched: false, skipped: r.error };
+      }
+      return { matched: c.op === 'matches' ? r.value : !r.value };
     }
   }
 }
@@ -223,6 +231,8 @@ export function validateRuleHook(input: unknown, envHas: (name: string) => boole
     }
     const re = parseRegex(m.find);
     if (typeof re === 'string') throw new ValidationError('hook_modify_regex', `수정할 패턴(find): ${re}`);
+    const slow = linearProblem(re.source, re.flags);
+    if (slow) throw new ValidationError('hook_modify_regex_slow', `수정할 패턴(find): ${slow}`);
     modify = { find: m.find, replace: m.replace };
   }
   return { name, event: ev, enabled: h['enabled'] !== false, action, conditions, reason, modify };
@@ -243,7 +253,7 @@ function validateCondition(raw: unknown, index: number, event: HookEvent, envHas
   }
   const envName = envRefName(value);
   if (envName && !envHas(envName)) {
-    throw new ValidationError('hook_condition_env', `${n}번째 조건이 참조하는 환경 변수 ${envName} 이(가) .env 에 없습니다. 먼저 .env 에 추가하세요.`);
+    throw new ValidationError('hook_condition_env', `${n}번째 조건이 참조하는 값 ${envName} 이(가) 없습니다. 설정 화면의 훅 값에서 먼저 넣으세요.`);
   }
   if (!envName) {
     if (op === 'in_window' || op === 'not_in_window') {
@@ -253,6 +263,8 @@ function validateCondition(raw: unknown, index: number, event: HookEvent, envHas
     if (op === 'matches' || op === 'not_matches') {
       const re = parseRegex(value);
       if (typeof re === 'string') throw new ValidationError('hook_condition_regex', `${n}번째 조건: ${re}`);
+      const slow = linearProblem(re.source, re.flags);
+      if (slow) throw new ValidationError('hook_condition_regex_slow', `${n}번째 조건: ${slow}`);
     }
     if (value === '' && op !== 'eq' && op !== 'neq') throw new ValidationError('hook_condition_value', `${n}번째 조건의 값이 비어 있습니다.`);
   }

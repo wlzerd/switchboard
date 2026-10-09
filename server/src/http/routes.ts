@@ -14,7 +14,7 @@ import { GUARD_DEFS } from '../guards/guards.ts';
 import { ACTIONS_BY_EVENT, FIELDS_BY_EVENT, CONDITION_OPS, renderHookCode, validateRuleHook } from '../hooks/rules.ts';
 import { HOOK_EVENTS, type HookCtx, type HookEvent } from '../hooks/types.ts';
 import { LIMIT_RULES } from '../limits/limits.ts';
-import { suggestDirs } from '../permissions/folders.ts';
+import { displayPath, suggestDirs } from '../permissions/folders.ts';
 import { groupModels } from '../anthropic/models.ts';
 import { describeSpec, localToUtc, parseSpec } from '../scheduler/spec.ts';
 import { readSourceFiles } from '../modules/install.ts';
@@ -153,6 +153,147 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
 
   server.get('/api/keys', async () => ({ keys: store.listKeys().map((k) => ({ id: k.id, label: k.label, source: k.source, last4: k.last4 })) }));
 
+  /** 키 이름 바꾸기 */
+  server.patch<IdParams>('/api/keys/:id', async (req) => {
+    const b = readBody(req);
+    const label = typeof b['label'] === 'string' ? b['label'].trim() : '';
+    if (label === '') throw new ValidationError('key_label', '키 이름을 입력하세요.');
+    if (label.length > 40) throw new ValidationError('key_label_long', `키 이름은 40자까지 쓸 수 있습니다. 지금 ${label.length}자입니다.`);
+    const key = store.renameKey(param(req, 'id'), label);
+    return { key: { id: key.id, label: key.label, source: key.source, last4: key.last4 } };
+  });
+
+  /** 저장된 키의 값 바꾸기 (새 키도 확인한 뒤 바꿈 · 쓰던 에이전트는 그대로 새 키를 씀) */
+  server.put<IdParams>('/api/keys/:id/secret', async (req) => {
+    const b = readBody(req);
+    const r = await app.anthropic.replaceKey(param(req, 'id'), typeof b['key'] === 'string' ? b['key'] : '');
+    app.bus.activity({ type: 'key.replaced', category: 'system', tone: 'pass', who: 'API 키', text: `'${r.key.label}' 값을 바꿈 · …${r.key.last4} · 모델 ${r.count}개`, agentId: null });
+    return { key: { id: r.key.id, label: r.key.label, source: r.key.source, last4: r.key.last4 }, count: r.count };
+  });
+
+  /** 키 지우기: 쓰는 에이전트가 있으면 막습니다. 지우면 서버 메모리의 연결도 비웁니다. */
+  server.delete<IdParams>('/api/keys/:id', async (req) => {
+    const key = store.getKey(param(req, 'id'));
+    if (key.source === 'env') throw new ConflictError('key_env_delete', "'.env 기본 키'는 화면에서 지울 수 없습니다. .env 의 ANTHROPIC_API_KEY 를 비우고 서버를 다시 시작하세요.");
+    const users = store.listAgents().filter((a) => a.keyId === key.id);
+    if (users.length > 0) {
+      throw new ConflictError('key_in_use', `${users.map((a) => a.name).join(' · ')}이(가) 쓰는 중이라 '${key.label}' 키를 지울 수 없습니다. 먼저 그 에이전트의 키를 바꾸세요.`, { agents: users.map((a) => a.id) });
+    }
+    store.deleteKey(key.id);
+    app.anthropic.forget(key.id);
+    app.bus.activity({ type: 'key.deleted', category: 'system', tone: 'agent', who: 'API 키', text: `'${key.label}' 지움 · …${key.last4}`, agentId: null });
+    return { ok: true };
+  });
+
+  /* ───── 설정 (env 와 DB 구분) ───── */
+  const moduleSettingsView = (id: string) => {
+    const row = store.getModule(id);
+    const fields = app.settings.moduleFields(row);
+    return {
+      id: row.id,
+      name: row.manifest.name,
+      icon: row.manifest.icon,
+      enabled: row.enabled,
+      status: registry.liveStatus(row.id),
+      statusDetail: row.statusDetail,
+      channel: row.manifest.channel !== null,
+      computer: row.manifest.computer !== null,
+      fields,
+      missing: fields.filter((f) => f.required && (f.source === 'empty' || f.source === 'locked')).map((f) => f.name),
+    };
+  };
+
+  server.get('/api/settings', async () => {
+    const modules = store.listModules('module').filter((m) => m.manifest.env.length > 0 && m.status !== 'rejected');
+    return {
+      keys: app.settings.keyViews(store.listKeys(), store.listAgents()),
+      modules: modules.map((m) => moduleSettingsView(m.id)),
+      hookVars: app.settings.hookVars(),
+      envLeft: app.settings.envLeft(modules),
+      env: app.settings.envGroups(),
+    };
+  });
+
+  /** 모듈 설정 저장: { values: { 이름: 값 | null } }. 켜져 있으면 다시 시작해 새 값을 씁니다. */
+  server.put<IdParams>('/api/modules/:id/settings', async (req) => {
+    const row = store.getModule(param(req, 'id'));
+    const b = readBody(req);
+    const changed = app.settings.saveModule(row, b['values']);
+    let restarted = false;
+    if (changed.length > 0 && row.enabled && row.status !== 'pending' && row.status !== 'rejected') {
+      await registry.restart(row.id).catch(() => {
+        // 시작하지 못한 이유는 모듈 상태에 남아 설정 화면에 보입니다.
+      });
+      restarted = true;
+    }
+    if (changed.length > 0) app.bus.activity({ type: 'module.settings', category: 'module', tone: 'pass', who: row.manifest.name, text: `설정 바꿈 · ${changed.join(', ')}${restarted ? ' · 다시 시작' : ''}`, moduleId: row.id });
+    app.bus.emit({ type: 'graph.changed' });
+    return { module: moduleSettingsView(row.id), changed, restarted };
+  });
+
+  /** .env 에만 있는 값을 DB 로 옮깁니다: { moduleId?, names? } · 둘 다 없으면 모든 모듈과 훅 값 */
+  server.post('/api/settings/import-env', async (req) => {
+    const b = readBody(req);
+    const moved: string[] = [];
+    const ids = typeof b['moduleId'] === 'string' ? [b['moduleId']] : store.listModules('module').filter((m) => m.manifest.env.length > 0).map((m) => m.id);
+    const names = Array.isArray(b['names']) ? b['names'].filter((n): n is string => typeof n === 'string') : undefined;
+    for (const id of ids) moved.push(...app.settings.importModuleEnv(store.getModule(id), names));
+    if (typeof b['moduleId'] !== 'string') moved.push(...app.settings.importHookVars());
+    if (moved.length > 0) app.bus.activity({ type: 'settings.imported', category: 'system', tone: 'pass', who: '설정', text: `.env 에서 DB 로 옮김 · ${moved.join(', ')}`, agentId: null });
+    return { moved };
+  });
+
+  /** 훅 값: PUT { value } · DELETE */
+  server.put<{ Params: { name: string } }>('/api/hook-vars/:name', async (req) => {
+    const b = readBody(req);
+    app.settings.setHookVar(param(req, 'name'), b['value']);
+    return { hookVars: app.settings.hookVars() };
+  });
+  server.delete<{ Params: { name: string } }>('/api/hook-vars/:name', async (req) => {
+    store.deleteHookVar(param(req, 'name'));
+    return { hookVars: app.settings.hookVars() };
+  });
+
+  /* ───── 관리 중인 프로젝트 ───── */
+  server.get('/api/projects', async () => ({ projects: app.projects.list() }));
+
+  server.get<IdParams>('/api/projects/:id', async (req) => {
+    const row = store.getProject(param(req, 'id'));
+    const agent = store.getAgent(row.agentId);
+    const view = app.projects.view(row, agent);
+    const git = view.status === 'ok' && view.isGit ? await app.projects.git(row) : null;
+    return { project: view, git, events: app.projects.events(row.id, 20) };
+  });
+
+  server.post('/api/projects', async (req, reply) => {
+    const b = readBody(req);
+    if (typeof b['agentId'] !== 'string') throw new ValidationError('project_agent', '프로젝트를 맡을 에이전트를 고르세요.');
+    const agent = store.getAgent(b['agentId']);
+    const row = app.projects.trackManual(agent, b['path'], { name: b['name'], note: b['note'], watch: b['watch'] });
+    reply.status(201);
+    return { project: app.projects.view(row, agent) };
+  });
+
+  server.patch<IdParams>('/api/projects/:id', async (req) => {
+    const b = readBody(req);
+    const row = app.projects.update(param(req, 'id'), { name: b['name'], note: b['note'], watch: b['watch'] });
+    return { project: app.projects.view(row, store.getAgent(row.agentId)) };
+  });
+
+  server.delete<IdParams>('/api/projects/:id', async (req) => {
+    app.projects.remove(param(req, 'id'));
+    return { ok: true };
+  });
+
+  /** 프로젝트 추가 화면의 영역 칩: 이 에이전트가 쓸 수 있는 폴더 */
+  server.get<IdParams>('/api/agents/:id/areas', async (req) => {
+    const agent = store.getAgent(param(req, 'id'));
+    const home = os.homedir();
+    return {
+      areas: app.projects.areas(agent).map((a) => ({ path: a.label === '작업 폴더' ? '작업 폴더' : displayPath(a.root, home), mode: a.mode })),
+    };
+  });
+
   server.post('/api/keys/verify', async (req) => {
     const body = readBody(req);
     const source = body['source'];
@@ -252,11 +393,15 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     return { started: task !== null };
   });
 
+  /** 대화 기록: 마지막 limit 개. before(타임라인 id)를 주면 그보다 앞의 기록을 이어서 읽습니다. */
   server.get<IdParams>('/api/agents/:id/timeline', async (req) => {
     const agent = store.getAgent(param(req, 'id'));
     const source = query(req, 'source') ?? 'console';
     const thread = store.listThreads(agent.id).find((t) => t.source === source);
-    return { threadId: thread?.id ?? null, items: thread ? store.listTimeline(thread.id, intQuery(req, 'limit', 200, 1, 1000)) : [] };
+    const limit = intQuery(req, 'limit', 200, 1, 1000);
+    const before = query(req, 'before') !== undefined ? intQuery(req, 'before', 0, 1, Number.MAX_SAFE_INTEGER) : undefined;
+    const items = thread ? store.listTimeline(thread.id, limit, before) : [];
+    return { threadId: thread?.id ?? null, items, more: items.length === limit };
   });
 
   server.get<IdParams>('/api/agents/:id/threads', async (req) => ({ threads: store.listVisibleThreads(store.getAgent(param(req, 'id')).id) }));
@@ -287,8 +432,8 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
   /* ───── 승인 ───── */
   server.get('/api/approvals', async (req) => {
     const status = query(req, 'status');
-    if (status !== undefined && !['pending', 'approved', 'denied', 'expired'].includes(status)) {
-      throw new ValidationError('approval_status', `status 는 pending, approved, denied, expired 중 하나여야 합니다. 받은 값: '${status}'`);
+    if (status !== undefined && !['pending', 'approved', 'denied', 'expired', 'cancelled'].includes(status)) {
+      throw new ValidationError('approval_status', `status 는 pending, approved, denied, expired, cancelled 중 하나여야 합니다. 받은 값: '${status}'`);
     }
     return { approvals: store.listApprovals(status as ApprovalStatus | undefined) };
   });
@@ -338,7 +483,8 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
         changed.push(e.name);
       }
     }
-    const missing = row.manifest.env.filter((e) => e.required && !process.env[e.name]?.trim()).map((e) => e.name);
+    // 설정 화면(DB)에 넣은 값이 먼저라 .env 만 보면 틀립니다.
+    const missing = app.settings.missingFields(row);
     const module = changed.length > 0 && row.enabled && row.status !== 'pending' ? await registry.restart(row.id) : row;
     app.bus.emit({ type: 'graph.changed' });
     return { changed, missing, module };
@@ -471,7 +617,8 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     };
   });
 
-  const envHas = (name: string): boolean => Boolean(process.env[name]?.trim());
+  // 훅이 참조하는 $env:이름 은 설정 화면의 훅 값(DB) 또는 .env 에 있어야 합니다.
+  const envHas = (name: string): boolean => app.settings.hookVar(name) !== undefined;
 
   server.post('/api/hooks', async (req, reply) => {
     const v = validateRuleHook(readBody(req), envHas);

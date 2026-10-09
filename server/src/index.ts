@@ -1,6 +1,7 @@
 import { createApp } from './app.ts';
 import { loadConfig } from './config/load.ts';
 import { ConfigError } from './errors.ts';
+import { regexRunner } from './hooks/safe-regex.ts';
 import { buildServer } from './http/server.ts';
 import { createLogger } from './log.ts';
 
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
     app.scheduler.stop();
     app.manager.shutdown();
     app.approvals.shutdown();
+    regexRunner.close();
     await server.close().catch(() => {});
     await app.registry.shutdown().catch(() => {});
     app.db.close();

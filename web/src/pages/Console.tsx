@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AgentEditModal } from '../components/AgentEdit';
 import { Icon } from '../components/Icon';
 import { shortModel } from '../components/Shell';
-import { Avatar, Modal, Seg, StatusLine, Steps, Switch } from '../components/ui';
+import { Avatar, Modal, ModuleIcon, Seg, StatusLine, Steps, Switch } from '../components/ui';
 import { EFFORT_LABEL } from '../lib/agent';
 import { api, errorText } from '../lib/api';
 import { MODE_LABEL } from '../lib/folders';
@@ -10,6 +10,7 @@ import { delegationChips, heartbeatFormOf, heartbeatFormProblem, heartbeatPayloa
 import { clock, relTime } from '../lib/format';
 import { navigate } from '../lib/router';
 import { onServerEvent, refreshOverview, toast, useApp } from '../lib/store';
+import { appendCapped, prependOlder, TIMELINE_KEEP, TIMELINE_PAGE } from '../lib/timeline';
 import type { AgentView, Meta, Overview, ScheduleView, TaskView, ThreadView, TimelineItem } from '../lib/types';
 
 const ACTIVE: ReadonlySet<string> = new Set(['queued', 'running', 'waiting']);
@@ -52,18 +53,23 @@ interface TimelineState {
   items: TimelineItem[];
   loading: boolean;
   error: string | null;
+  /** 앞에 더 읽을 기록이 있는지 */
+  more: boolean;
+  olderLoading: boolean;
+  /** 화면에 쌓아 둘 기록 수 (이전 기록을 더 읽으면 그만큼 늘어남) */
+  keep: number;
 }
 
 function useTimeline(agentId: string, source: string) {
-  const [state, setState] = useState<TimelineState>({ threadId: null, items: [], loading: true, error: null });
+  const [state, setState] = useState<TimelineState>({ threadId: null, items: [], loading: true, error: null, more: false, olderLoading: false, keep: TIMELINE_KEEP });
   const [live, setLive] = useState<Record<string, string>>({});
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
     const ac = new AbortController();
-    api<{ threadId: string | null; items: TimelineItem[] }>(`/api/agents/${agentId}/timeline?source=${encodeURIComponent(source)}`, { signal: ac.signal })
+    api<{ threadId: string | null; items: TimelineItem[]; more?: boolean }>(`/api/agents/${agentId}/timeline?source=${encodeURIComponent(source)}&limit=${TIMELINE_PAGE}`, { signal: ac.signal })
       .then((r) => {
-        setState({ threadId: r.threadId, items: r.items, loading: false, error: null });
+        setState({ threadId: r.threadId, items: r.items, loading: false, error: null, more: r.more === true, olderLoading: false, keep: TIMELINE_KEEP });
         setLive({});
       })
       .catch((err: unknown) => {
@@ -89,7 +95,11 @@ function useTimeline(agentId: string, source: string) {
             return;
           }
           if (e.item.threadId !== threadId) return;
-          setState((s) => (s.items.some((i) => i.id === e.item.id) ? s : { ...s, items: [...s.items, e.item] }));
+          setState((s) => {
+            if (s.items.some((i) => i.id === e.item.id)) return s;
+            const r = appendCapped(s.items, e.item, s.keep);
+            return { ...s, items: r.items, more: s.more || r.dropped };
+          });
           const taskId = e.item.taskId;
           if (taskId) setLive((l) => without(l, taskId));
           return;
@@ -116,7 +126,26 @@ function useTimeline(agentId: string, source: string) {
     };
   }, [agentId, threadId]);
 
-  return { ...state, live, retry: () => setReload((n) => n + 1) };
+  /** 화면 맨 위의 '이전 기록 더 보기': 지금 보이는 첫 기록보다 앞의 기록을 이어서 읽습니다. */
+  const loadOlder = (): void => {
+    const first = state.items[0];
+    if (!first || state.olderLoading) return;
+    setState((s) => ({ ...s, olderLoading: true }));
+    api<{ items: TimelineItem[]; more?: boolean }>(`/api/agents/${agentId}/timeline?source=${encodeURIComponent(source)}&limit=${TIMELINE_PAGE}&before=${first.id}`)
+      .then((r) =>
+        setState((s) => {
+          const next = prependOlder(s.items, r.items, s.keep, first.id);
+          if (!next) return { ...s, olderLoading: false };
+          return { ...s, items: next.items, keep: next.keep, more: r.more === true, olderLoading: false };
+        }),
+      )
+      .catch((err: unknown) => {
+        setState((s) => ({ ...s, olderLoading: false }));
+        toast(errorText(err), 'error');
+      });
+  };
+
+  return { ...state, live, retry: () => setReload((n) => n + 1), loadOlder };
 }
 
 /* ───────── 타임라인 항목 ───────── */
@@ -172,11 +201,12 @@ function ToolItem({ d }: { d: Record<string, unknown> }) {
   );
 }
 
-const DECISION: Record<string, { text: string; tone: 'ok' | 'bad' }> = {
+const DECISION: Record<string, { text: string; tone: 'ok' | 'bad' | '' }> = {
   once: { text: '이번만 허용', tone: 'ok' },
   always: { text: '항상 허용', tone: 'ok' },
   deny: { text: '거부', tone: 'bad' },
   expired: { text: '만료', tone: 'bad' },
+  cancelled: { text: '작업 취소로 닫힘', tone: '' },
 };
 
 function ApprovalItem({ d }: { d: Record<string, unknown> }) {
@@ -261,8 +291,13 @@ function DelegateItem({ d }: { d: Record<string, unknown> }) {
         </span>
         {to ? <Avatar name={to.name} color={to.color} size={20} /> : null}
         <b style={{ fontSize: 13.5 }}>{to?.name ?? str(d, 'toName')}에게 위임</b>
-        <span className={`chip ${view.tone}`} style={{ marginLeft: 'auto' }}>
-          {view.text}
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          {typeof d['round'] === 'number' && typeof d['maxRounds'] === 'number' ? (
+            <span className={`chip mono ${d['round'] >= d['maxRounds'] ? 'warn' : ''}`} title="같은 일로 이 에이전트에게 맡긴 횟수">
+              왕복 {d['round']}/{d['maxRounds']}
+            </span>
+          ) : null}
+          <span className={`chip ${view.tone}`}>{view.text}</span>
         </span>
       </div>
       {status === 'sent' ? <span className="flow-line" /> : null}
@@ -406,6 +441,8 @@ function TimelineEntry({ item, agent, tz }: { item: TimelineItem; agent: AgentVi
       );
     case 'delegate':
       return <DelegateItem d={d} />;
+    case 'setup':
+      return <SetupItem d={d} />;
     case 'screen':
       return <ScreenItem d={d} />;
     case 'report':
@@ -439,6 +476,49 @@ function TimelineEntry({ item, agent, tz }: { item: TimelineItem; agent: AgentVi
     default:
       return null;
   }
+}
+
+/** 모듈 설정이 비어 도구를 못 쓸 때: 설정 화면으로 가는 버튼과 값을 만드는 곳(토큰 발급 페이지 등). 링크는 서버가 만든 것만 씁니다. */
+function SetupItem({ d }: { d: Record<string, unknown> }) {
+  const moduleId = str(d, 'moduleId');
+  const fields = (Array.isArray(d['fields']) ? d['fields'] : []).flatMap((f) => {
+    if (f === null || typeof f !== 'object') return [];
+    const x = f as Record<string, unknown>;
+    const url = typeof x['url'] === 'string' && x['url'].startsWith('https://') ? x['url'] : null;
+    return [{ name: str(x, 'name'), label: str(x, 'label') || str(x, 'name'), locked: x['state'] === 'locked', url }];
+  });
+  return (
+    <div className="setup-card indent">
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+        <span className="setup-icon">
+          <ModuleIcon icon={str(d, 'icon') || 'cube'} size={15} />
+        </span>
+        <b style={{ fontSize: 13.5 }}>{str(d, 'moduleName')} · 설정 필요</b>
+        <span className="chips">
+          {fields.map((f) => (
+            <span key={f.name} className="chip bad" title={f.name}>
+              {f.locked ? '풀 수 없음 · ' : ''}
+              {f.label}
+            </span>
+          ))}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <button type="button" className="btn sm primary" onClick={() => navigate(`/settings/${encodeURIComponent(moduleId)}`)}>
+          <Icon name="key" size={14} stroke={2.2} />
+          설정 열기
+        </button>
+        {fields
+          .filter((f) => f.url)
+          .map((f) => (
+            <a key={f.name} className="btn sm" href={f.url ?? undefined} target="_blank" rel="noopener noreferrer">
+              <Icon name="link" size={14} stroke={2.2} />
+              {f.label} 만들기
+            </a>
+          ))}
+      </div>
+    </div>
+  );
 }
 
 /* ───────── 대화 ───────── */
@@ -554,7 +634,7 @@ function Composer({ agent, running, onSent }: { agent: AgentView; running: TaskV
 
 function Chat({ agent, source, threads, onSource }: { agent: AgentView; source: string; threads: ThreadView[]; onSource: (s: string) => void }) {
   const tz = useApp((s) => s.meta?.tz ?? 'UTC');
-  const { items, live, loading, error, retry } = useTimeline(agent.id, source);
+  const { items, live, loading, error, retry, more, olderLoading, loadOlder } = useTimeline(agent.id, source);
   const status = agent.paused ? 'paused' : agent.status;
   const task = agent.task;
   const running = task && ACTIVE.has(task.status) && items.some((i) => i.taskId === task.id) ? task : null;
@@ -576,6 +656,11 @@ function Chat({ agent, source, threads, onSource }: { agent: AgentView; source: 
           <h2>{agent.name}</h2>
           <StatusLine status={status} detail={agent.detail} />
         </div>
+        {agent.queueLength > 0 ? (
+          <span className={`chip mono ${agent.queueLength >= agent.queueMax ? 'warn' : ''}`} title="대기열 (조용한 작업 포함) / 상한" style={{ marginLeft: options.length > 1 ? undefined : 'auto' }}>
+            대기 {agent.queueLength}/{agent.queueMax}
+          </span>
+        ) : null}
         {options.length > 1 ? (
           <div style={{ marginLeft: 'auto', maxWidth: '100%', overflowX: 'auto' }}>
             <Seg value={source} options={options} onChange={onSource} label="대화방" />
@@ -584,6 +669,12 @@ function Chat({ agent, source, threads, onSource }: { agent: AgentView; source: 
       </div>
       <div className="chat-scroll" ref={scroller}>
         <div className="chat-list" aria-live="polite">
+          {more && items.length > 0 ? (
+            <button type="button" className="btn sm older-btn" disabled={olderLoading} onClick={loadOlder}>
+              {olderLoading ? <span className="spinner" style={{ width: 13, height: 13 }} /> : <Icon name="arrowUp" size={14} stroke={2.2} />}
+              이전 기록 더 보기
+            </button>
+          ) : null}
           {loading && items.length === 0 ? (
             <div className="empty">
               <span className="spinner" />
@@ -728,6 +819,11 @@ function Schedules({ agentId }: { agentId: string }) {
             {s.enabled && s.nextRun ? `다음 ${new Intl.DateTimeFormat('ko-KR', { timeZone: tz, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(s.nextRun))}` : '꺼짐'}
             {s.lastRun ? ` · 마지막 ${relTime(s.lastRun)}` : ''}
           </span>
+          {s.skipped > 0 ? (
+            <span className="chip warn" style={{ alignSelf: 'flex-start' }} title={s.lastSkippedAt ? `마지막으로 건너뜀 ${relTime(s.lastSkippedAt)} · 이전 실행이 안 끝났거나 일시정지 중` : undefined}>
+              건너뜀 {s.skipped}
+            </span>
+          ) : null}
         </div>
       ))}
     </div>

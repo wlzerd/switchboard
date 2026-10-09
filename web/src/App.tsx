@@ -12,6 +12,8 @@ import { GuardPage } from './pages/Guard';
 import { HirePage } from './pages/Hire';
 import { LoginPage } from './pages/Login';
 import { ModulesPage } from './pages/Modules';
+import { ProjectsPage } from './pages/Projects';
+import { SettingsPage } from './pages/Settings';
 import { ThemePage } from './pages/Theme';
 
 type Auth = 'checking' | 'out' | 'in';
@@ -94,8 +96,14 @@ export function App() {
       case 'hire':
         page = <HirePage />;
         break;
+      case 'projects':
+        page = <ProjectsPage projectId={route.param} />;
+        break;
       case 'modules':
         page = <ModulesPage />;
+        break;
+      case 'settings':
+        page = <SettingsPage focus={route.param} />;
         break;
       case 'guard':
         page = <GuardPage agentId={route.param} />;

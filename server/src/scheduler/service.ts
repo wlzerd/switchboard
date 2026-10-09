@@ -61,7 +61,8 @@ export class SchedulerService implements ScheduleApi {
       .map((r) => {
         const spec = parseSpec(r.spec);
         const label = typeof spec === 'string' ? r.spec : describeSpec(spec);
-        return `- ${r.id} · ${label} · ${r.enabled ? `다음 ${r.nextRun ? this.fmt(r.nextRun) : '-'}` : '꺼짐'} · ${r.prompt.slice(0, 60)}`;
+        const skipped = r.skipped > 0 ? ` · 건너뜀 ${r.skipped}회(이전 실행이 안 끝났거나 일시정지 중)` : '';
+        return `- ${r.id} · ${label} · ${r.enabled ? `다음 ${r.nextRun ? this.fmt(r.nextRun) : '-'}` : '꺼짐'}${skipped} · ${r.prompt.slice(0, 60)}`;
       })
       .join('\n');
   }

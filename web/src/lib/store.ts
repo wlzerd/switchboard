@@ -142,16 +142,27 @@ function handle(e: ServerEvent): void {
 
 let socket: WebSocket | null = null;
 let retry = 0;
-let stopped = false;
+/**
+ * 연결 세대. 새로 연결하거나 끊을 때마다 올립니다. 옛 세대의 소켓은 닫혀도 다시 붙지 않고, 받은 이벤트도 버립니다.
+ * (끊은 직후 다시 연결하면 — React StrictMode 의 두 번 실행, 빠른 재로그인 — 옛 소켓의 close 가 늦게 와서
+ *  연결이 둘로 늘고 이벤트가 두 번 처리되던 문제를 막습니다.)
+ */
+let generation = 0;
 
 /** WebSocket 연결. 끊기면 1초, 2초 … 최대 15초 간격으로 다시 붙고, 붙으면 전체를 새로 읽습니다. */
 export function connectEvents(): void {
-  stopped = false;
+  generation += 1;
+  const gen = generation;
   const open = (): void => {
+    if (gen !== generation) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/api/ws`);
     socket = ws;
     ws.onopen = () => {
+      if (gen !== generation) {
+        ws.close();
+        return;
+      }
       const reconnect = retry > 0;
       retry = 0;
       setState({ connected: true });
@@ -160,6 +171,7 @@ export function connectEvents(): void {
       }
     };
     ws.onmessage = (m) => {
+      if (gen !== generation) return;
       try {
         handle(JSON.parse(String(m.data)) as ServerEvent);
       } catch {
@@ -167,16 +179,23 @@ export function connectEvents(): void {
       }
     };
     ws.onclose = () => {
+      if (gen !== generation) return;
       setState({ connected: false });
-      if (stopped) return;
       retry += 1;
-      setTimeout(open, Math.min(15_000, 1000 * 2 ** Math.min(4, retry - 1)));
+      setTimeout(open, reconnectDelay(retry));
     };
   };
   open();
 }
 
+/** 다시 붙기까지 기다릴 시간: 1초, 2초, 4초, 8초, 그 뒤로 15초 */
+export function reconnectDelay(retry: number): number {
+  return Math.min(15_000, 1000 * 2 ** Math.min(4, Math.max(0, retry - 1)));
+}
+
 export function disconnectEvents(): void {
-  stopped = true;
-  socket?.close();
+  generation += 1;
+  const s = socket;
+  socket = null;
+  s?.close();
 }

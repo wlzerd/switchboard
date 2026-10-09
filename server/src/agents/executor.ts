@@ -9,6 +9,7 @@ import type { HookEngine } from '../hooks/engine.ts';
 import type { ToolCtx } from '../hooks/types.ts';
 import type { ModuleRegistry, ModuleTool } from '../modules/registry.ts';
 import { evaluatePermission, type PermissionDef } from '../permissions/policy.ts';
+import type { SetupNeed } from '../settings/service.ts';
 import { validateJson } from '../tools/json-schema.ts';
 import type { BuiltinTool, Described, ToolEnv } from '../tools/types.ts';
 import { COMPUTER_ACTIONS, HALT_TEXT, TOOLSET_NAME, saveScreenshot, screenSummary, screenTimeoutMs, typedText, type ScreenLocks } from './screen.ts';
@@ -48,6 +49,11 @@ export function skillNodeFor(tool: string, mod: ModuleTool | null): string | nul
 
 const PREVIEW = 600;
 
+/** 도구를 쓴 뒤 프로젝트 활동을 남기는 쪽 (ProjectService) */
+export interface ToolActivity {
+  afterTool(env: ToolEnv, tool: string, input: Record<string, unknown>, described: Described, ok: boolean): void;
+}
+
 export interface ExecutorDeps {
   config: Config;
   store: Store;
@@ -58,6 +64,10 @@ export interface ExecutorDeps {
   builtins: Map<string, BuiltinTool>;
   defs: () => PermissionDef[];
   screenLocks: ScreenLocks;
+  /** 프로젝트 활동 기록 (없으면 남기지 않음) */
+  activity?: ToolActivity;
+  /** 모듈의 '설정 필요' 항목 (없으면 카드를 띄우지 않음) */
+  setupNeeds?: (moduleId: string) => SetupNeed[];
 }
 
 export class ToolExecutor {
@@ -70,6 +80,20 @@ export class ToolExecutor {
   private block(env: ToolEnv, agent: AgentRow, title: string, text: string, code: string): void {
     env.sink.timeline('block', { title, text, code });
     env.sink.activity({ type: 'hook.blocked', category: 'hook', tone: 'block', who: '훅 차단', text: `${agent.name} · ${text}`, agentId: agent.id });
+  }
+
+  /**
+   * 모듈 설정(토큰 등)이 비어 시작하지 못했을 때 대화에 '설정 필요' 카드를 남깁니다 (작업마다 모듈당 한 번).
+   * 링크는 모델이 쓴 글이 아니라 서버가 만든 것이라 그대로 눌러도 됩니다: 설정 화면 · module.json 에 적힌 발급 페이지.
+   */
+  private showSetup(env: ToolEnv, moduleId: string): void {
+    if (!this.d.setupNeeds || env.setupShown.has(moduleId)) return;
+    const row = this.d.store.findModule(moduleId);
+    if (!row) return;
+    const needs = this.d.setupNeeds(moduleId);
+    if (needs.length === 0) return;
+    env.setupShown.add(moduleId);
+    env.sink.timeline('setup', { moduleId, moduleName: row.manifest.name, icon: row.manifest.icon, fields: needs });
   }
 
   /**
@@ -194,9 +218,15 @@ export class ToolExecutor {
         kind: needGrant ? 'permission' : 'hook',
         title: `화면 제어 · ${summary}`,
         detail: { permission: 'screen.control', target: null, rule: asks.join(' / '), tool, input: JSON.stringify(input).slice(0, 2000) },
+        signal: env.signal,
       });
       const result = await wait;
       env.sink.emit({ type: 'agent.status', agentId: agent.id, status: 'working', detail: null });
+      if (result.decision === 'cancelled') {
+        steps.end(stepId, false, '작업 취소');
+        this.screenCard(env, summary, false, null);
+        return fail('작업이 취소되어 화면 동작을 하지 않았습니다.');
+      }
       if (result.decision === 'deny' || result.decision === 'expired') {
         steps.end(stepId, false, result.decision === 'deny' ? '거부됨' : '승인 만료');
         this.screenCard(env, summary, false, null);
@@ -329,9 +359,14 @@ export class ToolExecutor {
         kind: def ? 'permission' : 'hook',
         title: `${def?.label ?? title} · ${described.summary}`,
         detail: { permission: def?.key ?? null, target: described.target, rule: asks.join(' / '), tool: use.name, input: JSON.stringify(input).slice(0, 2000) },
+        signal: env.signal,
       });
       const result = await wait;
       env.sink.emit({ type: 'agent.status', agentId: agent.id, status: 'working', detail: null });
+      if (result.decision === 'cancelled') {
+        steps.end(stepId, false, '작업 취소');
+        return { content: '작업이 취소되어 실행하지 않았습니다.', isError: true };
+      }
       if (result.decision === 'deny' || result.decision === 'expired') {
         steps.end(stepId, false, result.decision === 'deny' ? '거부됨' : '승인 만료');
         const why = result.decision === 'deny' ? '사용자가 이 작업을 거부했습니다.' : (result.note ?? `승인 대기 시간(${this.d.config.approvalTimeoutMinutes}분)이 지나 실행하지 않았습니다.`);
@@ -350,8 +385,18 @@ export class ToolExecutor {
     } catch (err) {
       ok = false;
       output = err instanceof AppError || err instanceof Error ? err.message : String(err);
+      if (mod && err instanceof ModuleError && (err.code === 'module_env_missing' || err.code === 'module_setting_locked')) this.showSetup(env, mod.moduleId);
     }
     const ms = Date.now() - t0;
+
+    // 프로젝트 활동 · git 저장소 자동 등록 (기록에 실패해도 도구 결과에는 영향 없음)
+    if (builtin && this.d.activity) {
+      try {
+        this.d.activity.afterTool(env, use.name, input, described, ok);
+      } catch {
+        // 무시
+      }
+    }
 
     // 결과 훅
     if (ok) {

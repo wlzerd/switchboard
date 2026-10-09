@@ -1,7 +1,7 @@
 // Discord 채널 모듈. discord.js(Apache-2.0)를 씁니다.
 // 받은 메시지는 ctx.emit 으로 서버에 넘기고, 서버가 보내라고 하면 send() 로 전송합니다.
 import { once } from 'node:events';
-import { ChannelType, Client, Events, GatewayIntentBits, Partials } from 'discord.js';
+import { ChannelType, Client, Events, GatewayIntentBits, Options, Partials } from 'discord.js';
 
 const MAX_LEN = 2000;
 let client = null;
@@ -42,6 +42,16 @@ export default {
     client = new Client({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
       partials: [Partials.Channel],
+      // 24시간 도는 봇이 본 메시지 · 사용자 · 멤버를 끝없이 기억하지 않게 캐시 크기를 정합니다.
+      // 받은 메시지는 바로 서버로 넘기므로 메시지 캐시는 두지 않습니다 (discord_read 는 그때그때 가져옴).
+      makeCache: Options.cacheWithLimits({
+        ...Options.DefaultMakeCacheSettings,
+        MessageManager: 0,
+        UserManager: { maxSize: 500, keepOverLimit: (user) => user.id === user.client.user?.id },
+        GuildMemberManager: { maxSize: 500, keepOverLimit: (member) => member.id === member.client.user?.id },
+        PresenceManager: 0,
+        ReactionManager: 0,
+      }),
     });
 
     client.on(Events.MessageCreate, (msg) => {

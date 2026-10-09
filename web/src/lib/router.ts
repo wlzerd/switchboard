@@ -23,7 +23,7 @@ export function usePath(): string {
 }
 
 export interface Route {
-  page: 'canvas' | 'console' | 'hire' | 'modules' | 'guard' | 'theme';
+  page: 'canvas' | 'console' | 'hire' | 'projects' | 'modules' | 'guard' | 'settings' | 'theme';
   param: string | null;
 }
 
@@ -36,8 +36,12 @@ export function parseRoute(path: string): Route {
       return { page: 'console', param };
     case 'hire':
       return { page: 'hire', param: null };
+    case 'projects':
+      return { page: 'projects', param };
     case 'modules':
       return { page: 'modules', param: null };
+    case 'settings':
+      return { page: 'settings', param };
     case 'guard':
       return { page: 'guard', param };
     case 'theme':

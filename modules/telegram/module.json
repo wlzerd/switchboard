@@ -10,7 +10,7 @@
   "icon": "plane",
   "channel": { "label": "Telegram" },
   "env": [
-    { "name": "TELEGRAM_BOT_TOKEN", "required": true, "description": "Telegram @BotFather 에서 발급한 토큰" }
+    { "name": "TELEGRAM_BOT_TOKEN", "label": "봇 토큰", "required": true, "secret": true, "description": "Telegram @BotFather 에서 발급한 토큰" }
   ],
   "permissions": {
     "net": ["api.telegram.org"],

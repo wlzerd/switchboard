@@ -1,5 +1,6 @@
 import { GUARD_DEFS, runGuards, type GuardEnv, type GuardState } from '../guards/guards.ts';
 import { clockOf, evalCondition, fieldText, inWindow, parseRegex, parseWindow, renderReason, type RuleHook, type RuleRuntime } from './rules.ts';
+import { regexRunner } from './safe-regex.ts';
 import type { HookAction, HookCtx, HookEvent, HookOutcome } from './types.ts';
 
 /**
@@ -36,8 +37,10 @@ export function hookHelpers(ctx: HookCtx, rt: RuleRuntime): HookHelpers {
       if (typeof re === 'string') throw new Error(re);
       const v = fieldText(ctx, name, rt.timeZone);
       if (v === null) return false;
-      re.lastIndex = 0;
-      return re.test(v);
+      // 코드 훅의 정규식도 시간 제한을 두고 별도 스레드에서 돌립니다. 시간이 지나면 오류로 그 훅을 건너뜁니다.
+      const r = regexRunner.test(re.source, re.flags, v);
+      if (!r.ok) throw new Error(r.error);
+      return r.value;
     },
     clock: () => clockOf(ctx.now, rt.timeZone),
   };
@@ -129,8 +132,15 @@ export class HookEngine {
         const text = modifiableText(ctx);
         const re = parseRegex(rule.modify.find);
         if (text !== null && typeof re !== 'string') {
-          const global = re.flags.includes('g') ? re : new RegExp(re.source, re.flags + 'g');
-          const next = text.replace(global, rule.modify.replace);
+          const flags = re.flags.includes('g') ? re.flags : `${re.flags}g`;
+          const r = regexRunner.replace(re.source, flags, text, rule.modify.replace);
+          if (!r.ok) {
+            // 가리려던 내용이 그대로 나가지 않도록, 수정하지 못하면 막습니다.
+            if (r.timedOut) return { decision: 'deny', reasons: [`훅 '${rule.name}'의 수정 패턴이 시간 안에 끝나지 않아 막았습니다 (${r.error}).`], by: [`hook:${rule.id}`], logs };
+            logs.push(`훅 '${rule.name}': ${r.error}`);
+            continue;
+          }
+          const next = r.value;
           if (next !== text) {
             ctx = withText(ctx, next);
             modified = true;

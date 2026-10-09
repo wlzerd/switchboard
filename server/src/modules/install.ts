@@ -29,7 +29,8 @@ export interface InstallContext {
   /** 다른 모듈이 이미 쓰는 도구 이름 → 모듈 id */
   toolOwners: () => Map<string, string>;
   moduleExists: (id: string) => { origin: ModuleOrigin } | null;
-  envHas: (name: string) => boolean;
+  /** 이 모듈의 설정 값이 있는지 (설정 화면에 저장했거나 .env 에 있음) */
+  envHas: (moduleId: string, name: string) => boolean;
 }
 
 /** 폴더 안의 파일을 스택으로 훑어 읽습니다 (node_modules·.git 제외). 개수·크기 한도를 넘으면 멈춥니다. */
@@ -167,11 +168,11 @@ export async function buildReport(
   if (manifest.env.length === 0) {
     checks.push({ label: '필요한 env', level: 'ok', detail: '없음' });
   } else {
-    const missing = manifest.env.filter((e) => e.required && !ctx.envHas(e.name)).map((e) => e.name);
+    const missing = manifest.env.filter((e) => e.required && !ctx.envHas(manifest.id, e.name)).map((e) => e.name);
     checks.push({
-      label: '필요한 env',
+      label: '필요한 설정',
       level: missing.length > 0 ? 'warn' : 'ok',
-      detail: missing.length > 0 ? `${missing.join(', ')} 이(가) .env 에 없습니다. 설치는 되지만 값을 넣기 전에는 시작하지 않습니다.` : manifest.env.map((e) => e.name).join(', '),
+      detail: missing.length > 0 ? `${missing.join(', ')} 이(가) 비어 있습니다. 설치는 되지만 설정 화면에서 값을 넣기 전에는 시작하지 않습니다.` : manifest.env.map((e) => e.name).join(', '),
     });
   }
 

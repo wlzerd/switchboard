@@ -11,6 +11,9 @@ import { Installer, type Staged } from './install.ts';
 import { parseManifest, type Manifest, type ManifestTool } from './manifest.ts';
 import type { InboundMessage, ImagePayload } from './protocol.ts';
 
+/** 모듈 설정 값을 꺼내는 쪽 (설정 화면의 DB 값 → .env). app 이 SettingsService 로 연결합니다. */
+export type ModuleSettingsResolver = (manifest: Manifest) => { values: Record<string, string>; missing: string[]; problems: string[] };
+
 export interface ModuleTool extends ManifestTool {
   moduleId: string;
   kind: 'module' | 'skill';
@@ -28,6 +31,17 @@ export class ModuleRegistry {
   readonly installer: Installer;
   /** 채널 모듈이 받은 메시지를 에이전트에게 넘기는 함수 (AgentManager 가 연결) */
   onInbound: (moduleId: string, msg: InboundMessage) => void = () => {};
+  /** 모듈 설정 값 (기본: .env 만) */
+  settings: ModuleSettingsResolver = (manifest) => {
+    const values: Record<string, string> = {};
+    const missing: string[] = [];
+    for (const e of manifest.env) {
+      const v = process.env[e.name];
+      if (v && v.trim() !== '') values[e.name] = v;
+      else if (e.required) missing.push(e.name);
+    }
+    return { values, missing, problems: [] };
+  };
 
   constructor(config: Config, store: Store, bus: EventBus, log: Logger) {
     this.config = config;
@@ -41,7 +55,11 @@ export class ModuleRegistry {
         const m = store.findModule(id);
         return m ? { origin: m.origin } : null;
       },
-      envHas: (name) => Boolean(process.env[name]?.trim()),
+      envHas: (moduleId, name) => {
+        const m = store.findModule(moduleId);
+        if (!m) return Boolean(process.env[name]?.trim());
+        return name in this.settings(m.manifest).values;
+      },
     });
   }
 
@@ -51,17 +69,13 @@ export class ModuleRegistry {
     return dirs.filter((d) => fs.existsSync(d));
   }
 
-  private envFor(manifest: Manifest): { env: Record<string, string>; missing: string[] } {
+  private envFor(manifest: Manifest): { env: Record<string, string>; missing: string[]; problems: string[] } {
     const env: Record<string, string> = { NODE_ENV: process.env['NODE_ENV'] ?? 'production', TZ: process.env['TZ'] || 'UTC', LANG: process.env['LANG'] ?? 'C.UTF-8' };
-    const missing: string[] = [];
     // 하위 프로세스를 띄우는 모듈(화면 제어 등)은 프로그램을 찾을 수 있게 PATH 를 받습니다. 비밀값이 아닙니다.
     if (manifest.permissions.childProcess && process.env['PATH']) env['PATH'] = process.env['PATH'];
-    for (const e of manifest.env) {
-      const v = process.env[e.name];
-      if (v && v.trim() !== '') env[e.name] = v;
-      else if (e.required) missing.push(e.name);
-    }
-    return { env, missing };
+    // 모듈이 선언한 설정만 넘깁니다 (화면에서 넣은 값이 먼저, 없으면 .env).
+    const s = this.settings(manifest);
+    return { env: { ...env, ...s.values }, missing: s.missing, problems: s.problems };
   }
 
   private makeHost(row: ModuleRow): ModuleHost {

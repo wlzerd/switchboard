@@ -121,8 +121,8 @@ export interface ModuleRow {
 export interface AgentModuleRow {
   agentId: string;
   moduleId: string;
-  /** targets: 응답할 대화 대상(비면 전부) · trigger: direct=멘션·DM 일 때만, all=모든 메시지 */
-  config: { targets?: string[]; trigger?: 'direct' | 'all' };
+  /** targets: 응답할 대화 대상(비면 전부) · trigger: direct=멘션·DM 일 때만, all=모든 메시지, none=받지 않고 도구만 */
+  config: { targets?: string[]; trigger?: 'direct' | 'all' | 'none' };
 }
 
 /* ───────── 대화·작업 ───────── */
@@ -145,7 +145,7 @@ export interface MessageRow {
   createdAt: number;
 }
 
-export type TimelineKind = 'user' | 'agent' | 'tool' | 'approval' | 'hook' | 'block' | 'skill' | 'system' | 'error' | 'delegate' | 'report' | 'screen';
+export type TimelineKind = 'user' | 'agent' | 'tool' | 'approval' | 'hook' | 'block' | 'skill' | 'system' | 'error' | 'delegate' | 'report' | 'screen' | 'setup';
 
 export interface TimelineRow {
   id: number;
@@ -187,7 +187,8 @@ export interface TaskRow {
 
 /* ───────── 승인 ───────── */
 
-export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired';
+/** cancelled: 승인을 기다리던 작업이 취소되어 닫힘 */
+export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
 export type ApprovalDecision = 'once' | 'always' | 'deny';
 
 export interface ApprovalDetail {
@@ -242,6 +243,64 @@ export interface ScheduleRow {
   lastRun: number | null;
   createdBy: string;
   createdAt: number;
+  /** 이전 실행이 아직 끝나지 않았거나 에이전트가 일시정지 중이라 건너뛴 횟수 */
+  skipped: number;
+  lastSkippedAt: number | null;
+}
+
+/* ───────── 관리 중인 프로젝트 ───────── */
+
+/** 등록한 계기: 사용자 지시 중 · 스스로(하트비트 · 예약 · 자동 알림) · 다른 에이전트가 맡긴 일 · 화면에서 직접 */
+export type ProjectOrigin = 'instruction' | 'self' | 'delegation' | 'manual';
+
+export interface ProjectRow {
+  id: string;
+  agentId: string;
+  /** 실제 절대 경로 (심볼릭 링크를 푼 값) */
+  path: string;
+  name: string;
+  note: string;
+  origin: ProjectOrigin;
+  /** 등록한 대화 · 예약 · 맡긴 에이전트 같은 설명 */
+  originDetail: string;
+  originTaskId: string | null;
+  /** 하트비트 점검에 포함 */
+  watch: boolean;
+  /** 에이전트가 git 저장소에서 작업해 자동으로 등록됨 */
+  auto: boolean;
+  createdAt: number;
+  lastActivityAt: number | null;
+  lastActivity: string | null;
+}
+
+export interface ProjectEventRow {
+  id: number;
+  projectId: string;
+  kind: 'write' | 'read' | 'list' | 'shell' | 'commit';
+  label: string;
+  detail: string;
+  ok: boolean;
+  taskId: string | null;
+  createdAt: number;
+}
+
+/* ───────── 화면에서 넣는 모듈 설정 · 훅 값 ───────── */
+
+export interface ModuleSettingRow {
+  moduleId: string;
+  name: string;
+  /** 비밀이 아닌 값 */
+  value: string | null;
+  /** 비밀값 (SECRETS_KEY 로 암호화) */
+  cipher: string | null;
+  last4: string | null;
+  updatedAt: number;
+}
+
+export interface HookVarRow {
+  name: string;
+  value: string;
+  updatedAt: number;
 }
 
 export interface HookRow extends RuleHook {
@@ -254,8 +313,18 @@ export interface HookRow extends RuleHook {
  */
 export class Store {
   readonly db: Db;
+  /** 활동 기록을 이만큼만 남깁니다 (0 이면 지우지 않음). app 이 설정합니다. */
+  private activityKeep = 0;
+  private activityInserts = 0;
   constructor(db: Db) {
     this.db = db;
+  }
+
+  /** 활동 기록 보관 개수. 지금 넘치는 것도 바로 지웁니다. */
+  configureActivity(keep: number): void {
+    this.activityKeep = keep;
+    this.activityInserts = 0;
+    if (keep > 0) this.pruneActivity(keep);
   }
 
   /* 설정 */
@@ -299,6 +368,20 @@ export class Store {
   }
   updateEnvKeyLast4(id: string, last4: string): void {
     this.db.run('UPDATE api_keys SET last4 = :last4 WHERE id = :id', { id, last4 });
+  }
+  renameKey(id: string, label: string): ApiKeyRow {
+    const r = this.db.run('UPDATE api_keys SET label = :label WHERE id = :id', { id, label });
+    if (r.changes === 0) throw new NotFoundError('API 키', id);
+    return this.getKey(id);
+  }
+  replaceKeySecret(id: string, cipher: string, last4: string, fingerprint: string): ApiKeyRow {
+    const r = this.db.run("UPDATE api_keys SET cipher = :cipher, last4 = :last4, fingerprint = :fingerprint WHERE id = :id AND source = 'stored'", { id, cipher, last4, fingerprint });
+    if (r.changes === 0) throw new NotFoundError('저장된 API 키', id);
+    return this.getKey(id);
+  }
+  deleteKey(id: string): void {
+    const r = this.db.run('DELETE FROM api_keys WHERE id = :id', { id });
+    if (r.changes === 0) throw new NotFoundError('API 키', id);
   }
 
   /* 에이전트 */
@@ -576,9 +659,12 @@ export class Store {
     const r = this.db.get('SELECT * FROM timeline WHERE id = :id', { id });
     return r ? { id: num(r, 'id'), threadId: str(r, 'thread_id'), taskId: strOrNull(r, 'task_id'), kind: str(r, 'kind') as TimelineKind, data: parseJson(r['data'], `timeline.data (id=${id})`), createdAt: num(r, 'created_at') } : null;
   }
-  listTimeline(threadId: string, limit: number): TimelineRow[] {
-    return this.db
-      .all('SELECT * FROM (SELECT * FROM timeline WHERE thread_id = :threadId ORDER BY id DESC LIMIT :limit) ORDER BY id', { threadId, limit })
+  /** 마지막 limit 개 (before 를 주면 그 id 보다 앞의 것 중 마지막 limit 개). 오래 연 화면이 이전 기록을 나눠 읽을 때 씁니다. */
+  listTimeline(threadId: string, limit: number, before?: number): TimelineRow[] {
+    const rows = before !== undefined
+      ? this.db.all('SELECT * FROM (SELECT * FROM timeline WHERE thread_id = :threadId AND id < :before ORDER BY id DESC LIMIT :limit) ORDER BY id', { threadId, limit, before })
+      : this.db.all('SELECT * FROM (SELECT * FROM timeline WHERE thread_id = :threadId ORDER BY id DESC LIMIT :limit) ORDER BY id', { threadId, limit });
+    return rows
       .map((r) => ({ id: num(r, 'id'), threadId, taskId: strOrNull(r, 'task_id'), kind: str(r, 'kind') as TimelineKind, data: parseJson(r['data'], `timeline.data (id=${num(r, 'id')})`), createdAt: num(r, 'created_at') }));
   }
   findTimelineByApproval(approvalId: string): TimelineRow | null {
@@ -617,6 +703,10 @@ export class Store {
     return this.db
       .all("SELECT DISTINCT delegated_by AS from_id, agent_id AS to_id FROM tasks WHERE delegated_by IS NOT NULL AND status IN ('queued','running','waiting')")
       .map((r) => ({ from: str(r, 'from_id'), to: str(r, 'to_id') }));
+  }
+  findTask(id: string): TaskRow | null {
+    const r = this.db.get('SELECT * FROM tasks WHERE id = :id', { id });
+    return r ? this.taskRow(r) : null;
   }
   getTask(id: string): TaskRow {
     const r = this.db.get('SELECT * FROM tasks WHERE id = :id', { id });
@@ -693,6 +783,9 @@ export class Store {
       'INSERT INTO activity (ts, type, category, tone, who, text, agent_id, module_id, data) VALUES (:ts, :type, :category, :tone, :who, :text, :agentId, :moduleId, :data)',
       { ts, type: a.type, category: a.category, tone: a.tone, who: a.who, text: a.text, agentId: a.agentId, moduleId: a.moduleId, data: a.data ? JSON.stringify(a.data) : null },
     ).lastInsertRowid;
+    // 100건마다 오래된 기록을 지웁니다 (24시간 도는 서버에서 끝없이 쌓이지 않게).
+    this.activityInserts += 1;
+    if (this.activityKeep > 0 && this.activityInserts % 100 === 0) this.pruneActivity(this.activityKeep);
     return { ...a, id, ts };
   }
   listActivity(limit: number, before?: number): ActivityRow[] {
@@ -745,9 +838,10 @@ export class Store {
       id: str(r, 'id'), agentId: str(r, 'agent_id'), spec: str(r, 'spec'), prompt: str(r, 'prompt'),
       reply: r['reply'] ? parseJson<ScheduleRow['reply']>(r['reply'], 'schedules.reply') : null, enabled: num(r, 'enabled') === 1,
       nextRun: numOrNull(r, 'next_run'), lastRun: numOrNull(r, 'last_run'), createdBy: str(r, 'created_by'), createdAt: num(r, 'created_at'),
+      skipped: num(r, 'skipped'), lastSkippedAt: numOrNull(r, 'last_skipped_at'),
     };
   }
-  insertSchedule(s: Omit<ScheduleRow, 'id' | 'createdAt' | 'lastRun'>): ScheduleRow {
+  insertSchedule(s: Omit<ScheduleRow, 'id' | 'createdAt' | 'lastRun' | 'skipped' | 'lastSkippedAt'>): ScheduleRow {
     const id = randomId('sch');
     this.db.run(
       'INSERT INTO schedules (id, agent_id, spec, prompt, reply, enabled, next_run, last_run, created_by, created_at) VALUES (:id, :agentId, :spec, :prompt, :reply, :enabled, :nextRun, NULL, :createdBy, :now)',
@@ -770,11 +864,120 @@ export class Store {
   markScheduleRun(id: string, lastRun: number, nextRun: number | null): void {
     this.db.run('UPDATE schedules SET last_run = :lastRun, next_run = :nextRun WHERE id = :id', { id, lastRun, nextRun });
   }
+  /** 실행 시각이 됐지만 넣지 않고 건너뜀 (다음 시각은 markScheduleRun 으로 이미 넘김) */
+  markScheduleSkipped(id: string, at: number): void {
+    this.db.run('UPDATE schedules SET skipped = skipped + 1, last_skipped_at = :at WHERE id = :id', { id, at });
+  }
   setScheduleEnabled(id: string, enabled: boolean, nextRun: number | null): void {
     this.db.run('UPDATE schedules SET enabled = :enabled, next_run = :nextRun WHERE id = :id', { id, enabled: enabled ? 1 : 0, nextRun });
   }
   deleteSchedule(id: string): void {
     const r = this.db.run('DELETE FROM schedules WHERE id = :id', { id });
     if (r.changes === 0) throw new NotFoundError('예약', id);
+  }
+
+  /* 관리 중인 프로젝트 */
+  private projectRow(r: Row): ProjectRow {
+    return {
+      id: str(r, 'id'), agentId: str(r, 'agent_id'), path: str(r, 'path'), name: str(r, 'name'), note: str(r, 'note'),
+      origin: str(r, 'origin') as ProjectOrigin, originDetail: str(r, 'origin_detail'), originTaskId: strOrNull(r, 'origin_task_id'),
+      watch: num(r, 'watch') === 1, auto: num(r, 'auto') === 1, createdAt: num(r, 'created_at'),
+      lastActivityAt: numOrNull(r, 'last_activity_at'), lastActivity: strOrNull(r, 'last_activity'),
+    };
+  }
+  insertProject(p: Omit<ProjectRow, 'id' | 'createdAt' | 'lastActivityAt' | 'lastActivity'>): ProjectRow {
+    const id = randomId('prj');
+    this.db.run(
+      `INSERT INTO projects (id, agent_id, path, name, note, origin, origin_detail, origin_task_id, watch, auto, created_at)
+       VALUES (:id, :agentId, :path, :name, :note, :origin, :originDetail, :originTaskId, :watch, :auto, :now)`,
+      { id, agentId: p.agentId, path: p.path, name: p.name, note: p.note, origin: p.origin, originDetail: p.originDetail, originTaskId: p.originTaskId, watch: p.watch ? 1 : 0, auto: p.auto ? 1 : 0, now: Date.now() },
+    );
+    return this.getProject(id);
+  }
+  findProject(id: string): ProjectRow | null {
+    const r = this.db.get('SELECT * FROM projects WHERE id = :id', { id });
+    return r ? this.projectRow(r) : null;
+  }
+  getProject(id: string): ProjectRow {
+    const p = this.findProject(id);
+    if (!p) throw new NotFoundError('프로젝트', id);
+    return p;
+  }
+  findProjectByPath(agentId: string, path: string): ProjectRow | null {
+    const r = this.db.get('SELECT * FROM projects WHERE agent_id = :agentId AND path = :path', { agentId, path });
+    return r ? this.projectRow(r) : null;
+  }
+  listProjects(agentId?: string): ProjectRow[] {
+    const rows = agentId
+      ? this.db.all('SELECT * FROM projects WHERE agent_id = :agentId ORDER BY COALESCE(last_activity_at, created_at) DESC', { agentId })
+      : this.db.all('SELECT * FROM projects ORDER BY COALESCE(last_activity_at, created_at) DESC');
+    return rows.map((r) => this.projectRow(r));
+  }
+  updateProject(id: string, patch: Partial<Pick<ProjectRow, 'name' | 'note' | 'watch'>>): ProjectRow {
+    const cur = this.getProject(id);
+    const n = { ...cur, ...patch };
+    this.db.run('UPDATE projects SET name = :name, note = :note, watch = :watch WHERE id = :id', { id, name: n.name, note: n.note, watch: n.watch ? 1 : 0 });
+    return this.getProject(id);
+  }
+  deleteProject(id: string): void {
+    const r = this.db.run('DELETE FROM projects WHERE id = :id', { id });
+    if (r.changes === 0) throw new NotFoundError('프로젝트', id);
+  }
+  /** 활동 하나를 남기고 프로젝트의 마지막 활동을 바꿉니다. 프로젝트마다 keep 개만 남깁니다. */
+  addProjectEvent(e: Omit<ProjectEventRow, 'id' | 'createdAt'>, keep: number, now = Date.now()): void {
+    this.db.tx(() => {
+      this.db.run(
+        'INSERT INTO project_events (project_id, kind, label, detail, ok, task_id, created_at) VALUES (:projectId, :kind, :label, :detail, :ok, :taskId, :now)',
+        { projectId: e.projectId, kind: e.kind, label: e.label, detail: e.detail, ok: e.ok ? 1 : 0, taskId: e.taskId, now },
+      );
+      this.db.run('UPDATE projects SET last_activity_at = :now, last_activity = :summary WHERE id = :id', { id: e.projectId, now, summary: `${e.label} · ${e.detail}`.slice(0, 200) });
+      this.db.run(
+        'DELETE FROM project_events WHERE project_id = :projectId AND id <= (SELECT id FROM project_events WHERE project_id = :projectId ORDER BY id DESC LIMIT 1 OFFSET :keep)',
+        { projectId: e.projectId, keep },
+      );
+    });
+  }
+  listProjectEvents(projectId: string, limit: number): ProjectEventRow[] {
+    return this.db
+      .all('SELECT * FROM project_events WHERE project_id = :projectId ORDER BY id DESC LIMIT :limit', { projectId, limit })
+      .map((r) => ({
+        id: num(r, 'id'), projectId: str(r, 'project_id'), kind: str(r, 'kind') as ProjectEventRow['kind'], label: str(r, 'label'), detail: str(r, 'detail'),
+        ok: num(r, 'ok') === 1, taskId: strOrNull(r, 'task_id'), createdAt: num(r, 'created_at'),
+      }));
+  }
+
+  /* 모듈 설정 (화면에서 넣는 값) */
+  private moduleSettingRow(r: Row): ModuleSettingRow {
+    return { moduleId: str(r, 'module_id'), name: str(r, 'name'), value: strOrNull(r, 'value'), cipher: strOrNull(r, 'cipher'), last4: strOrNull(r, 'last4'), updatedAt: num(r, 'updated_at') };
+  }
+  listModuleSettings(moduleId?: string): ModuleSettingRow[] {
+    const rows = moduleId ? this.db.all('SELECT * FROM module_settings WHERE module_id = :moduleId ORDER BY name', { moduleId }) : this.db.all('SELECT * FROM module_settings ORDER BY module_id, name');
+    return rows.map((r) => this.moduleSettingRow(r));
+  }
+  setModuleSetting(moduleId: string, name: string, v: { value: string | null; cipher: string | null; last4: string | null }): void {
+    this.db.run(
+      `INSERT INTO module_settings (module_id, name, value, cipher, last4, updated_at) VALUES (:moduleId, :name, :value, :cipher, :last4, :now)
+       ON CONFLICT(module_id, name) DO UPDATE SET value = excluded.value, cipher = excluded.cipher, last4 = excluded.last4, updated_at = excluded.updated_at`,
+      { moduleId, name, value: v.value, cipher: v.cipher, last4: v.last4, now: Date.now() },
+    );
+  }
+  deleteModuleSetting(moduleId: string, name: string): void {
+    this.db.run('DELETE FROM module_settings WHERE module_id = :moduleId AND name = :name', { moduleId, name });
+  }
+
+  /* 훅 값 ($env:이름 으로 참조) */
+  listHookVars(): HookVarRow[] {
+    return this.db.all('SELECT * FROM hook_vars ORDER BY name').map((r) => ({ name: str(r, 'name'), value: str(r, 'value'), updatedAt: num(r, 'updated_at') }));
+  }
+  getHookVar(name: string): string | null {
+    const r = this.db.get('SELECT value FROM hook_vars WHERE name = :name', { name });
+    return r ? str(r, 'value') : null;
+  }
+  setHookVar(name: string, value: string): void {
+    this.db.run('INSERT INTO hook_vars (name, value, updated_at) VALUES (:name, :value, :now) ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at', { name, value, now: Date.now() });
+  }
+  deleteHookVar(name: string): void {
+    const r = this.db.run('DELETE FROM hook_vars WHERE name = :name', { name });
+    if (r.changes === 0) throw new NotFoundError('훅 값', name);
   }
 }

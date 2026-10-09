@@ -1,12 +1,31 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Config } from '../config/env.ts';
+import { appLink, type Config } from '../config/env.ts';
 import type { ModuleRow, ModuleStatus } from '../db/store.ts';
 import { ModuleError } from '../errors.ts';
 import type { Logger } from '../log.ts';
 import type { Manifest } from './manifest.ts';
 import type { ChildMessage, ImagePayload, InboundMessage, ParentMessage } from './protocol.ts';
+
+/**
+ * 설정이 비었거나 풀 수 없어 시작하지 못했을 때 에이전트 · 사용자에게 줄 길잡이:
+ * 설정 화면 주소와, module.json 에 적힌 값 만드는 곳(토큰 발급 페이지 등).
+ */
+export function setupGuide(config: Pick<Config, 'publicUrl' | 'host' | 'port'>, manifest: Pick<Manifest, 'id' | 'env'>, names: readonly string[]): string {
+  const parts = [`설정 화면: ${appLink(config, `/settings/${manifest.id}`)}`];
+  for (const n of names) {
+    const e = manifest.env.find((x) => x.name === n);
+    if (e?.url) parts.push(`${e.label ?? e.name} 만드는 곳: ${e.url}`);
+  }
+  return ` (${parts.join(' · ')})`;
+}
+
+/** 설정 이름을 화면에 보이는 이름과 함께: '토큰'(GITHUB_TOKEN) */
+function settingLabel(manifest: Pick<Manifest, 'env'>, name: string): string {
+  const e = manifest.env.find((x) => x.name === name);
+  return e?.label ? `'${e.label}'(${name})` : name;
+}
 
 /** 재시작 대기 시간: 1초, 2초, 4초 … 최대 maxMs. attempt 는 1부터. */
 export function restartDelayMs(attempt: number, baseMs = 1000, maxMs = 60_000): number {
@@ -29,7 +48,7 @@ export interface HostDeps {
   log: Logger;
   runnerPath: string;
   readDirs: string[];
-  envFor: (manifest: Manifest) => { env: Record<string, string>; missing: string[] };
+  envFor: (manifest: Manifest) => { env: Record<string, string>; missing: string[]; problems?: string[] };
   onStatus: (id: string, status: ModuleStatus, detail: string | null) => void;
   onInbound: (id: string, msg: InboundMessage) => void;
   onLog: (id: string, level: 'info' | 'warn' | 'error', line: string) => void;
@@ -126,11 +145,17 @@ export class ModuleHost {
       return Promise.reject(new ModuleError('module_disabled', `모듈 '${this.id}'이(가) 꺼져 있습니다. 모듈 화면에서 켜세요.`, 409));
     }
     if (this.ready && this.running) return this.ready;
-    const { env, missing } = this.deps.envFor(this.row.manifest);
-    if (missing.length > 0) {
-      const msg = `필요한 환경 변수 ${missing.join(', ')} 이(가) .env 에 없어 '${this.row.manifest.name}' 모듈을 시작하지 못했습니다. .env 에 값을 넣은 뒤 모듈 화면에서 '.env 다시 읽기'를 누르세요.`;
+    const { env, missing, problems = [] } = this.deps.envFor(this.row.manifest);
+    // 화면(모듈 상태)에는 짧은 문구를, 도구를 부른 에이전트에게는 설정 화면 · 발급 페이지 주소까지 줍니다 (사용자에게 그대로 전할 수 있게).
+    if (problems.length > 0) {
+      const msg = `'${this.row.manifest.name}' 모듈을 시작하지 못했습니다: ${problems[0]}`;
       this.setStatus('failed', msg);
-      return Promise.reject(new ModuleError('module_env_missing', msg, 409, { missing }));
+      return Promise.reject(new ModuleError('module_setting_locked', `${msg}${setupGuide(this.deps.config, this.row.manifest, [])}`, 409));
+    }
+    if (missing.length > 0) {
+      const msg = `필요한 설정 ${missing.map((n) => settingLabel(this.row.manifest, n)).join(', ')}이(가) 비어 있어 '${this.row.manifest.name}' 모듈을 시작하지 못했습니다. 설정 화면의 모듈 항목에서 값을 넣으세요.`;
+      this.setStatus('failed', msg);
+      return Promise.reject(new ModuleError('module_env_missing', `${msg}${setupGuide(this.deps.config, this.row.manifest, missing)}`, 409, { missing }));
     }
 
     const dataDir = path.join(this.deps.config.dataDir, 'module-data', this.id);
@@ -199,7 +224,8 @@ export class ModuleHost {
             this.pushLog(m.level, m.msg);
             return;
           case 'status':
-            this.deps.onStatus(this.id, this.status, m.detail);
+            // 모듈이 알리는 지금 상태의 문제(토큰 만료 등). 빈 문자열이면 지웁니다.
+            this.deps.onStatus(this.id, this.status, typeof m.detail === 'string' && m.detail.trim() !== '' ? m.detail.slice(0, 500) : null);
             return;
         }
       });

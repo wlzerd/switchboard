@@ -41,8 +41,31 @@ function verifySession(app: App, raw: string | undefined): { ok: true } | { ok: 
   return { ok: true };
 }
 
+/** 실시간 연결 확인 간격 */
+export const WS_PING_MS = 25_000;
+/** 보내지 못하고 쌓인 데이터가 이만큼 넘으면 그 연결을 끊습니다 */
+export const WS_MAX_BUFFER = 4 * 1024 * 1024;
+
+/**
+ * 연결 확인 한 번: 지난 확인에 답(pong)이 없었으면 끊고, 있었으면 다시 확인을 보냅니다.
+ * 노트북 잠자기처럼 조용히 끊긴 연결은 운영체제가 알아채기까지 수십 분이 걸려, 그동안 이벤트가 쌓이기만 합니다.
+ */
+export function wsKeepalive(state: { alive: boolean }, socket: { readyState: number; OPEN: number; ping(): void; terminate(): void }): 'terminated' | 'pinged' | 'skipped' {
+  if (socket.readyState !== socket.OPEN) return 'skipped';
+  if (!state.alive) {
+    socket.terminate();
+    return 'terminated';
+  }
+  state.alive = false;
+  socket.ping();
+  return 'pinged';
+}
+
 export async function buildServer(app: App): Promise<FastifyInstance> {
   const server = Fastify({ logger: false, trustProxy: app.config.trustProxy, bodyLimit: BODY_LIMIT });
+  if (app.config.trustProxy === true) {
+    app.log.warn('TRUST_PROXY=true 는 X-Forwarded-For 맨 앞 값(클라이언트가 마음대로 넣을 수 있음)을 접속 주소로 믿어 로그인 잠금을 피할 수 있습니다. 프록시가 같은 컴퓨터면 TRUST_PROXY=loopback, 아니면 프록시 IP 를 넣으세요.');
+  }
   await server.register(fastifyCookie);
   await server.register(fastifyWebsocket, { options: { maxPayload: 64 * 1024 } });
 
@@ -153,20 +176,26 @@ export async function buildServer(app: App): Promise<FastifyInstance> {
 
   /* 실시간 이벤트 */
   server.get('/api/ws', { websocket: true }, (socket) => {
+    const state = { alive: true };
+    socket.on('pong', () => {
+      state.alive = true;
+    });
     const unsubscribe = app.bus.subscribe((event) => {
-      if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(event));
+      if (socket.readyState !== socket.OPEN) return;
+      // 받는 쪽이 읽지 않는 연결은 보낼 데이터가 메모리에 쌓이기만 하므로 끊습니다.
+      if (socket.bufferedAmount > WS_MAX_BUFFER) {
+        socket.terminate();
+        return;
+      }
+      socket.send(JSON.stringify(event));
     });
-    const ping = setInterval(() => {
-      if (socket.readyState === socket.OPEN) socket.ping();
-    }, 25_000);
-    socket.on('close', () => {
+    const ping = setInterval(() => wsKeepalive(state, socket), WS_PING_MS);
+    const cleanup = (): void => {
       clearInterval(ping);
       unsubscribe();
-    });
-    socket.on('error', () => {
-      clearInterval(ping);
-      unsubscribe();
-    });
+    };
+    socket.on('close', cleanup);
+    socket.on('error', cleanup);
   });
 
   registerRoutes(server, app);

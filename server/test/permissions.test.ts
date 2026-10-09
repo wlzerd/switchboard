@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { globToRegExp, matchCommandPattern, matchHost, matchPath } from '../src/permissions/match.ts';
+import { matchCommandPattern, matchHost, matchPath } from '../src/permissions/match.ts';
 import { BASE_PERMISSIONS, evaluatePermission, validatePermissionSet, type PermissionDef } from '../src/permissions/policy.ts';
 import { packageManagerOf, parseCommand } from '../src/permissions/shell.ts';
 import { ValidationError } from '../src/errors.ts';
@@ -27,7 +27,8 @@ describe('경로 glob', () => {
   });
 
   it('정규식 특수문자는 글자 그대로', () => {
-    expect(globToRegExp('a+(b)').test('a+(b)')).toBe(true);
+    expect(matchPath('a+(b)', 'a+(b)')).toBe(true);
+    expect(matchPath('a.b', 'axb')).toBe(false);
   });
 });
 

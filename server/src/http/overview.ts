@@ -15,6 +15,7 @@ export const BUILTIN_NODES = [
 const NEW_SKILL_MS = 30 * 60_000;
 
 function moduleView(app: App, m: ModuleRow, agentsById: Map<string, AgentRow>) {
+  const fields = app.settings.moduleFields(m);
   return {
     id: m.id,
     kind: m.kind,
@@ -33,7 +34,10 @@ function moduleView(app: App, m: ModuleRow, agentsById: Map<string, AgentRow>) {
     computer: m.manifest.computer !== null,
     screenHolder: m.manifest.computer ? (app.manager.screenLocks.holder(m.id) ?? null) : null,
     tools: m.manifest.tools.map((t) => ({ name: t.name, title: t.title ?? t.name })),
-    env: m.manifest.env.map((e) => ({ name: e.name, required: e.required, present: Boolean(process.env[e.name]?.trim()) })),
+    env: fields.map((f) => ({ name: f.name, label: f.label, required: f.required, present: f.source === 'db' || f.source === 'env', source: f.source })),
+    /** 필수인데 비었거나 풀 수 없는 설정 · 아직 .env 에서 읽는 설정 */
+    settingsMissing: fields.filter((f) => f.required && (f.source === 'empty' || f.source === 'locked')).map((f) => f.label),
+    envLeft: fields.filter((f) => f.source === 'env').map((f) => f.name),
     permissions: m.manifest.permissions,
     license: m.manifest.license,
     createdBy: m.createdBy,
@@ -52,6 +56,7 @@ export function buildOverview(app: App) {
   const links = app.store.listAgentModules();
   const modules = app.store.listModules();
   const keys = new Map(app.store.listKeys().map((k) => [k.id, k]));
+  const projects = app.projects.list();
 
   const agentViews = agents.map((a) => {
     const live = app.manager.live(a.id);
@@ -70,6 +75,8 @@ export function buildOverview(app: App) {
       status: live.status,
       detail: live.detail,
       queued: live.queued.length,
+      queueLength: live.queueLength,
+      queueMax: live.queueMax,
       task: current ? { id: current.id, title: current.title, status: current.status, steps: current.steps, error: current.error, origin: current.origin, finishedAt: current.finishedAt } : null,
       tokensToday: app.store.usageTotal(a.id, day),
       tokenLimit: a.limits.tokensPerDay,
@@ -80,6 +87,12 @@ export function buildOverview(app: App) {
       report: a.report,
       /** 허용 폴더 (화면에는 홈을 ~ 로 줄인 경로) */
       folders: a.folders.map((f) => ({ path: displayPath(f.path, home), mode: f.mode })),
+      /** 관리 중인 프로젝트 (캔버스 패널용 요약) */
+      projects: projects
+        .filter((p) => p.agentId === a.id)
+        .slice(0, 20)
+        .map((p) => ({ id: p.id, name: p.name, displayPath: p.displayPath, status: p.status, watch: p.watch, isGit: p.isGit })),
+      projectCount: projects.filter((p) => p.agentId === a.id).length,
     };
   });
 

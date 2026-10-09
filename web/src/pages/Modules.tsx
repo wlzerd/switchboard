@@ -184,7 +184,7 @@ function LogsModal({ module, onClose }: { module: ModuleView; onClose: () => voi
 interface Draft {
   on: boolean;
   targets: string[];
-  trigger: 'direct' | 'all';
+  trigger: 'direct' | 'all' | 'none';
 }
 
 function LinksModal({ module, agents, onClose }: { module: ModuleView; agents: AgentView[]; onClose: () => void }) {
@@ -255,6 +255,19 @@ function LinksModal({ module, agents, onClose }: { module: ModuleView; agents: A
                   />
                 </div>
               ) : null}
+              {d.on && !module.canSend && module.channel ? (
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, paddingLeft: 38 }}>
+                  <Seg
+                    value={d.trigger === 'none' ? 'none' : 'direct'}
+                    options={[
+                      { value: 'direct', label: '알림 받기' },
+                      { value: 'none', label: '도구만' },
+                    ]}
+                    onChange={(trigger) => set({ trigger })}
+                    label={`${a.name} 받는 방식`}
+                  />
+                </div>
+              ) : null}
               {errors[a.id] ? <span className="err">{errors[a.id]}</span> : null}
             </div>
           );
@@ -280,7 +293,7 @@ function ModuleCard({ m, agents, index }: { m: ModuleView; agents: AgentView[]; 
   const [modal, setModal] = useState<'code' | 'logs' | 'links' | 'delete' | null>(null);
   const status = STATUS_VIEW[m.status];
   const linked = agents.filter((a) => a.links.some((l) => l.moduleId === m.id));
-  const missing = m.env.filter((e) => e.required && !e.present);
+  const missing = m.settingsMissing;
   const pending = m.status === 'pending';
   const failed = m.status === 'failed' || m.status === 'crashed';
   // 승인 대기 카드는 주황 테두리를 지키도록 '새로 설치됨' 강조에서 뺍니다.
@@ -302,7 +315,7 @@ function ModuleCard({ m, agents, index }: { m: ModuleView; agents: AgentView[]; 
   const reloadEnv = (): Promise<void> =>
     run('env', async () => {
       const r = await api<{ changed: string[]; missing: string[] }>(`/api/modules/${m.id}/reload-env`, { body: {} });
-      if (r.missing.length > 0) toast(`.env 에 아직 없습니다: ${r.missing.join(', ')}`, 'error');
+      if (r.missing.length > 0) toast(`아직 비어 있는 필수 설정: ${r.missing.join(', ')}`, 'error');
       else toast(r.changed.length > 0 ? `${r.changed.join(', ')} 를 다시 읽어 ${m.enabled ? '다시 시작했습니다' : '반영했습니다'}` : '.env 에서 바뀐 값이 없습니다', r.changed.length > 0 ? 'ok' : 'info');
     });
 
@@ -354,12 +367,14 @@ function ModuleCard({ m, agents, index }: { m: ModuleView; agents: AgentView[]; 
             </span>
           ))}
         </span>
-        <span>env</span>
+        <span>설정</span>
         <span className="chips">
           {m.env.length === 0 ? <span className="muted">필요 없음</span> : null}
           {m.env.map((e) => (
-            <span key={e.name} className={`chip mono ${e.present ? 'ok' : e.required ? 'bad' : ''}`}>
-              {e.present ? '✓' : '✗'} {e.name}
+            <span key={e.name} title={e.name} className={`chip ${e.source === 'db' ? 'ok' : e.source === 'env' ? 'warn' : e.required ? 'bad' : ''}`}>
+              {e.source === 'db' ? '✓ ' : e.source === 'env' ? '.env ' : e.source === 'locked' ? '풀 수 없음 ' : e.required ? '✗ ' : ''}
+              {e.label}
+              {e.source === 'empty' && !e.required ? ' · 기본값' : ''}
             </span>
           ))}
         </span>
@@ -385,10 +400,38 @@ function ModuleCard({ m, agents, index }: { m: ModuleView; agents: AgentView[]; 
           <span style={{ overflowWrap: 'anywhere' }}>{m.statusDetail}</span>
         </div>
       ) : null}
-      {!failed && missing.length > 0 && !pending ? (
+      {!failed && m.enabled && m.status === 'running' && m.statusDetail ? (
+        <div className="alert warn" role="status">
+          <Icon name="alert" size={14} stroke={2.4} />
+          <span style={{ overflowWrap: 'anywhere' }}>{m.statusDetail}</span>
+        </div>
+      ) : null}
+      {missing.length > 0 && !pending ? (
         <div className="alert warn">
           <Icon name="key" size={14} stroke={2.2} />
-          <span>.env 에 {missing.map((e) => e.name).join(', ')} 이(가) 필요합니다</span>
+          <span style={{ flex: 1 }}>설정 필요 · {missing.join(', ')}</span>
+          <button type="button" className="btn xs light" onClick={() => navigate(`/settings/${encodeURIComponent(m.id)}`)}>
+            설정
+          </button>
+        </div>
+      ) : null}
+      {missing.length === 0 && m.envLeft.length > 0 && !pending ? (
+        <div className="alert warn">
+          <Icon name="doc" size={14} stroke={2.2} />
+          <span style={{ flex: 1 }}>.env에서 읽는 중 · {m.envLeft.join(', ')}</span>
+          <button
+            type="button"
+            className="btn xs warn-solid"
+            disabled={busy !== null}
+            onClick={() =>
+              void run('move', async () => {
+                const r = await api<{ moved: string[] }>('/api/settings/import-env', { body: { moduleId: m.id } });
+                toast(r.moved.length > 0 ? `${r.moved.join(', ')} 를 DB로 옮겼습니다. .env 에서 그 줄을 지워도 됩니다.` : '.env 에서 옮길 값이 없습니다.', 'ok');
+              })
+            }
+          >
+            DB로 옮기기
+          </button>
         </div>
       ) : null}
       {pending && m.report ? (
@@ -422,6 +465,12 @@ function ModuleCard({ m, agents, index }: { m: ModuleView; agents: AgentView[]; 
               로그
             </button>
             {m.env.length > 0 ? (
+              <button type="button" className="btn xs" onClick={() => navigate(`/settings/${encodeURIComponent(m.id)}`)}>
+                <Icon name="key" size={13} stroke={2.2} />
+                설정
+              </button>
+            ) : null}
+            {m.envLeft.length > 0 ? (
               <button type="button" className="btn xs" disabled={busy !== null} onClick={() => void reloadEnv()}>
                 {busy === 'env' ? <span className="spinner" style={{ width: 12, height: 12 }} /> : <Icon name="refresh" size={13} stroke={2.2} />}
                 .env 다시 읽기

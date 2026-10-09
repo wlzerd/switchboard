@@ -10,7 +10,7 @@
   "icon": "chat",
   "channel": { "label": "Discord" },
   "env": [
-    { "name": "DISCORD_BOT_TOKEN", "required": true, "description": "Discord 개발자 포털 > Bot 에서 발급한 토큰" }
+    { "name": "DISCORD_BOT_TOKEN", "label": "봇 토큰", "required": true, "secret": true, "description": "Discord 개발자 포털 > Bot 에서 발급한 토큰" }
   ],
   "permissions": {
     "net": ["discord.com", "*.discord.com", "discordapp.com", "*.discordapp.com", "*.discord.gg", "discord.gg", "*.discordapp.net"],

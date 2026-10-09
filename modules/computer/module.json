@@ -11,9 +11,9 @@
   "computer": { "label": "이 컴퓨터 화면" },
   "defaultEnabled": false,
   "env": [
-    { "name": "COMPUTER_MAX_EDGE", "required": false, "description": "스크린샷 긴 변 최대 픽셀 (기본 1568, 640~2000)" },
-    { "name": "DISPLAY", "required": false, "description": "Linux: X11 화면 (예: :0, 가상 화면은 :99)" },
-    { "name": "XAUTHORITY", "required": false, "description": "Linux: X11 인증 파일 경로 (필요할 때만)" }
+    { "name": "COMPUTER_MAX_EDGE", "label": "스크린샷 긴 변(px)", "required": false, "secret": false, "description": "스크린샷 긴 변 최대 픽셀 (기본 1568, 640~2000)" },
+    { "name": "DISPLAY", "label": "X11 화면", "required": false, "secret": false, "description": "Linux: X11 화면 (예: :0, 가상 화면은 :99)" },
+    { "name": "XAUTHORITY", "label": "X11 인증 파일", "required": false, "secret": false, "description": "Linux: X11 인증 파일 경로 (필요할 때만)" }
   ],
   "permissions": {
     "net": [],

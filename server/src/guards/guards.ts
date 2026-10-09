@@ -396,7 +396,7 @@ function installGuards(ctx: InstallCtx, env: GuardEnv): GuardHit | null {
   const known = env.knownSecrets();
   for (const f of ctx.files) {
     const s = findSecret(f.content, known);
-    if (s) return hit('hardcoded', `${f.path}:${s.line} 에 ${s.kind}이(가) 직접 들어 있습니다. 코드에는 ctx.env.이름 으로 참조하고 값은 .env 에 넣어야 설치됩니다.`);
+    if (s) return hit('hardcoded', `${f.path}:${s.line} 에 ${s.kind}이(가) 직접 들어 있습니다. 코드에는 ctx.env.이름 으로 참조하고(module.json 의 env 에 선언) 값은 설정 화면에서 넣어야 설치됩니다.`);
   }
   return null;
 }

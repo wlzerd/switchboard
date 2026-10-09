@@ -10,13 +10,13 @@
   "icon": "mail",
   "channel": { "label": "이메일", "send": false },
   "env": [
-    { "name": "EMAIL_IMAP_HOST", "required": true, "description": "IMAP 서버 주소 (예: imap.gmail.com, imap.naver.com)" },
-    { "name": "EMAIL_USER", "required": true, "description": "로그인 아이디 (보통 메일 주소)" },
-    { "name": "EMAIL_PASSWORD", "required": true, "description": "비밀번호. Gmail 등은 2단계 인증 후 만든 앱 비밀번호" },
-    { "name": "EMAIL_IMAP_PORT", "required": false, "description": "포트 (기본: TLS 993, 아니면 143)" },
-    { "name": "EMAIL_IMAP_TLS", "required": false, "description": "TLS 사용 true/false (기본 true)" },
-    { "name": "EMAIL_MAILBOX", "required": false, "description": "지켜볼 편지함 (기본 INBOX)" },
-    { "name": "EMAIL_CHECK_MINUTES", "required": false, "description": "IDLE 알림을 놓쳤을 때를 대비한 확인 간격(분, 기본 5)" }
+    { "name": "EMAIL_IMAP_HOST", "label": "IMAP 서버", "required": true, "secret": false, "description": "IMAP 서버 주소 (예: imap.gmail.com, imap.naver.com)" },
+    { "name": "EMAIL_USER", "label": "계정", "required": true, "secret": false, "description": "로그인 아이디 (보통 메일 주소)" },
+    { "name": "EMAIL_PASSWORD", "label": "비밀번호", "required": true, "secret": true, "description": "비밀번호. Gmail 등은 2단계 인증 후 만든 앱 비밀번호" },
+    { "name": "EMAIL_IMAP_PORT", "label": "포트", "required": false, "secret": false, "description": "포트 (기본: TLS 993, 아니면 143)" },
+    { "name": "EMAIL_IMAP_TLS", "label": "TLS", "required": false, "secret": false, "description": "TLS 사용 true/false (기본 true)" },
+    { "name": "EMAIL_MAILBOX", "label": "편지함", "required": false, "secret": false, "description": "지켜볼 편지함 (기본 INBOX)" },
+    { "name": "EMAIL_CHECK_MINUTES", "label": "확인 간격(분)", "required": false, "secret": false, "description": "IDLE 알림을 놓쳤을 때를 대비한 확인 간격(분, 기본 5)" }
   ],
   "permissions": {
     "net": ["*"],

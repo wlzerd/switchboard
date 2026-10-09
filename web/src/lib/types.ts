@@ -74,16 +74,129 @@ export interface AgentView {
   status: AgentStatus;
   detail: string | null;
   queued: number;
+  /** 대기열 길이(조용한 작업 포함)와 상한 */
+  queueLength: number;
+  queueMax: number;
   task: TaskView | null;
   tokensToday: number;
   tokenLimit: number;
   limits: AgentLimits;
-  links: { moduleId: string; targets: string[]; trigger: 'direct' | 'all' }[];
+  links: { moduleId: string; targets: string[]; trigger: 'direct' | 'all' | 'none' }[];
   delegation: DelegationSettings;
   heartbeat: (HeartbeatSettings & { lastAt: number | null }) | null;
   report: ReportTarget | null;
   /** 허용 폴더 (홈은 ~ 로 줄인 경로) */
   folders: { path: string; mode: 'read' | 'write' }[];
+  /** 관리 중인 프로젝트 요약 (앞의 20개) */
+  projects: { id: string; name: string; displayPath: string; status: ProjectStatus; watch: boolean; isGit: boolean }[];
+  projectCount: number;
+}
+
+/* ───────── 관리 중인 프로젝트 ───────── */
+
+export type ProjectOrigin = 'instruction' | 'self' | 'delegation' | 'manual';
+export type ProjectStatus = 'ok' | 'missing' | 'denied';
+
+export interface ProjectView {
+  id: string;
+  agentId: string;
+  name: string;
+  path: string;
+  displayPath: string;
+  note: string;
+  origin: ProjectOrigin;
+  originDetail: string;
+  watch: boolean;
+  auto: boolean;
+  createdAt: number;
+  lastActivityAt: number | null;
+  lastActivity: string | null;
+  status: ProjectStatus;
+  mode: 'read' | 'write' | null;
+  area: string;
+  isGit: boolean;
+}
+
+export interface GitInfo {
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  files: { code: string; path: string }[];
+  changed: number;
+  commit: { hash: string; subject: string; at: number } | null;
+}
+
+export interface ProjectEvent {
+  id: number;
+  projectId: string;
+  kind: 'write' | 'read' | 'list' | 'shell' | 'commit';
+  label: string;
+  detail: string;
+  ok: boolean;
+  taskId: string | null;
+  createdAt: number;
+}
+
+export interface ProjectDetail {
+  project: ProjectView;
+  git: { ok: true; info: GitInfo } | { ok: false; reason: string } | null;
+  events: ProjectEvent[];
+}
+
+/* ───────── 설정 (env 와 DB) ───────── */
+
+/** db: 화면에서 넣은 값 · env: .env 에서 읽는 값 · empty: 없음 · locked: 저장돼 있지만 SECRETS_KEY 로 풀 수 없음 */
+export type FieldSource = 'db' | 'env' | 'empty' | 'locked';
+
+export interface ModuleField {
+  name: string;
+  label: string;
+  description: string;
+  required: boolean;
+  secret: boolean;
+  source: FieldSource;
+  value: string | null;
+  last4: string | null;
+  envAlso: boolean;
+  /** 값을 만드는 곳 (토큰 발급 페이지 등) */
+  url: string | null;
+}
+
+export interface ModuleSettingsView {
+  id: string;
+  name: string;
+  icon: string;
+  enabled: boolean;
+  status: ModuleStatus;
+  statusDetail: string | null;
+  channel: boolean;
+  computer: boolean;
+  fields: ModuleField[];
+  missing: string[];
+}
+
+export interface KeyView {
+  id: string;
+  label: string;
+  source: 'env' | 'stored';
+  last4: string;
+  users: { id: string; name: string; color: string }[];
+}
+
+export interface HookVarView {
+  name: string;
+  value: string | null;
+  source: 'db' | 'env' | 'empty';
+  usedBy: string[];
+}
+
+export interface SettingsResponse {
+  keys: KeyView[];
+  modules: ModuleSettingsView[];
+  hookVars: HookVarView[];
+  envLeft: { moduleId: string | null; name: string }[];
+  env: { title: string; items: { key: string; value: string; tone: 'ok' | 'muted' | 'plain'; isNew: boolean }[] }[];
 }
 
 export interface InstallCheck {
@@ -117,7 +230,10 @@ export interface ModuleView {
   computer: boolean;
   screenHolder: { taskId: string; agentId: string; agentName: string; since: number } | null;
   tools: { name: string; title: string }[];
-  env: { name: string; required: boolean; present: boolean }[];
+  env: { name: string; label: string; required: boolean; present: boolean; source: FieldSource }[];
+  /** 필수인데 비었거나 풀 수 없는 설정(이름) · 아직 .env 에서 읽는 설정 */
+  settingsMissing: string[];
+  envLeft: string[];
   permissions: { net: string[]; fsWrite: boolean; childProcess: boolean };
   license: string;
   createdBy: string | null;
@@ -235,6 +351,9 @@ export interface ScheduleView {
   lastRun: number | null;
   createdBy: string;
   createdAt: number;
+  /** 이전 실행이 안 끝났거나 일시정지 중이라 건너뛴 횟수 */
+  skipped: number;
+  lastSkippedAt: number | null;
 }
 
 export interface ApprovalView {
@@ -244,7 +363,7 @@ export interface ApprovalView {
   kind: string;
   title: string;
   detail: { permission: string | null; target: string | null; rule: string; tool: string | null; input: string | null; moduleId?: string };
-  status: 'pending' | 'approved' | 'denied' | 'expired';
+  status: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
   decision: 'once' | 'always' | 'deny' | null;
   reason: string | null;
   createdAt: number;
@@ -266,7 +385,7 @@ export interface TimelineItem {
   id: number;
   threadId: string;
   taskId: string | null;
-  kind: 'user' | 'agent' | 'tool' | 'approval' | 'hook' | 'block' | 'skill' | 'system' | 'error' | 'delegate' | 'report' | 'screen';
+  kind: 'user' | 'agent' | 'tool' | 'approval' | 'hook' | 'block' | 'skill' | 'system' | 'error' | 'delegate' | 'report' | 'screen' | 'setup';
   data: Record<string, unknown>;
   createdAt: number;
 }

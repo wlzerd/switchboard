@@ -4,7 +4,8 @@ import { ConflictError, ValidationError } from '../errors.ts';
 import type { EventBus } from '../events/bus.ts';
 import type { Logger } from '../log.ts';
 
-export type ApprovalOutcome = { decision: ApprovalDecision } | { decision: 'expired' };
+/** cancelled: 승인을 기다리던 작업이 취소되어 요청을 닫음 */
+export type ApprovalOutcome = { decision: ApprovalDecision } | { decision: 'expired' } | { decision: 'cancelled' };
 
 /** 결정이 내려졌을 때 실행할 후속 처리 (권한에 항상 허용 추가, 대기 모듈 설치 등). 반환 문자열은 대기 중인 도구에 전달됩니다. */
 export type DecisionHandler = (approval: ApprovalRow, decision: ApprovalDecision | 'expired') => Promise<string | null> | string | null;
@@ -12,6 +13,8 @@ export type DecisionHandler = (approval: ApprovalRow, decision: ApprovalDecision
 interface Waiter {
   resolve: (o: ApprovalOutcome & { note: string | null }) => void;
   timer: NodeJS.Timeout;
+  /** 작업 취소 신호에 붙인 리스너를 뗍니다 */
+  detach: () => void;
 }
 
 export class ApprovalService {
@@ -42,7 +45,7 @@ export class ApprovalService {
 
   /**
    * 승인을 요청하고 결정을 기다립니다. 대화 타임라인과 활동 로그에 함께 표시됩니다.
-   * 시간이 지나면 거부로 처리합니다.
+   * 시간이 지나면 거부로 처리하고, 기다리던 작업이 취소되면(signal) 바로 닫습니다 (취소가 승인 대기에 막히지 않게).
    */
   request(input: {
     agentId: string;
@@ -52,6 +55,7 @@ export class ApprovalService {
     kind: string;
     title: string;
     detail: ApprovalDetail;
+    signal?: AbortSignal;
   }): { approval: ApprovalRow; wait: Promise<ApprovalOutcome & { note: string | null }> } {
     const approval = this.store.insertApproval({ agentId: input.agentId, taskId: input.taskId, kind: input.kind, title: input.title, detail: input.detail });
     if (input.threadId) {
@@ -71,7 +75,13 @@ export class ApprovalService {
       const timer = setTimeout(() => {
         void this.finish(approval.id, 'expired', `승인 대기 시간(${this.config.approvalTimeoutMinutes}분)이 지나 거부로 처리했습니다.`);
       }, this.config.approvalTimeoutMinutes * 60_000);
-      this.waiters.set(approval.id, { resolve, timer });
+      const signal = input.signal;
+      const onAbort = (): void => {
+        void this.finish(approval.id, 'cancelled', '작업이 취소되어 승인 요청을 닫았습니다.');
+      };
+      this.waiters.set(approval.id, { resolve, timer, detach: () => signal?.removeEventListener('abort', onAbort) });
+      if (signal?.aborted) queueMicrotask(onAbort);
+      else signal?.addEventListener('abort', onAbort, { once: true });
     });
     return { approval, wait };
   }
@@ -83,21 +93,22 @@ export class ApprovalService {
     }
     const row = this.store.getApproval(id);
     if (row.status !== 'pending') {
-      const what = row.status === 'expired' ? '시간이 지나 만료된' : row.status === 'approved' ? '이미 허용된' : '이미 거부된';
+      const what = row.status === 'expired' ? '시간이 지나 만료된' : row.status === 'cancelled' ? '작업이 취소되어 닫힌' : row.status === 'approved' ? '이미 허용된' : '이미 거부된';
       throw new ConflictError('approval_closed', `${what} 승인 요청입니다${row.reason ? ` (${row.reason})` : ''}.`);
     }
     return this.finish(id, decision, null);
   }
 
-  private async finish(id: string, decision: ApprovalDecision | 'expired', reason: string | null): Promise<ApprovalRow> {
+  private async finish(id: string, decision: ApprovalDecision | 'expired' | 'cancelled', reason: string | null): Promise<ApprovalRow> {
     const before = this.store.getApproval(id);
     if (before.status !== 'pending') return before;
-    const status = decision === 'expired' ? 'expired' : decision === 'deny' ? 'denied' : 'approved';
-    const row = this.store.decideApproval(id, status, decision === 'expired' ? null : decision, reason);
+    const status = decision === 'expired' ? 'expired' : decision === 'cancelled' ? 'cancelled' : decision === 'deny' ? 'denied' : 'approved';
+    const row = this.store.decideApproval(id, status, decision === 'expired' || decision === 'cancelled' ? null : decision, reason);
 
     let note: string | null = null;
     const handler = this.handlers.get(row.kind) ?? (row.detail.permission ? this.handlers.get('permission') : undefined);
-    if (handler) {
+    // 작업이 취소된 경우에는 후속 처리(대기 모듈 삭제 등)를 하지 않습니다. 대기 모듈은 모듈 화면에서 따로 결정할 수 있습니다.
+    if (handler && decision !== 'cancelled') {
       try {
         note = await handler(row, decision);
       } catch (err) {
@@ -114,12 +125,14 @@ export class ApprovalService {
       this.bus.emit({ type: 'timeline.update', agentId: row.agentId, item });
     }
     this.bus.emit({ type: 'approval.resolved', approval: row });
-    const label = decision === 'once' ? '이번만 허용' : decision === 'always' ? '항상 허용' : decision === 'deny' ? '거부' : '만료';
-    this.bus.activity({ type: 'approval.resolved', category: 'hook', tone: decision === 'once' || decision === 'always' ? 'pass' : 'block', who: '승인', text: `${row.title} · ${label}`, agentId: row.agentId });
+    const label = decision === 'once' ? '이번만 허용' : decision === 'always' ? '항상 허용' : decision === 'deny' ? '거부' : decision === 'cancelled' ? '작업 취소로 닫힘' : '만료';
+    const tone = decision === 'once' || decision === 'always' ? 'pass' : decision === 'cancelled' ? 'agent' : 'block';
+    this.bus.activity({ type: 'approval.resolved', category: 'hook', tone, who: '승인', text: `${row.title} · ${label}`, agentId: row.agentId });
 
     const w = this.waiters.get(id);
     if (w) {
       clearTimeout(w.timer);
+      w.detach();
       this.waiters.delete(id);
       w.resolve({ decision, note } as ApprovalOutcome & { note: string | null });
     }
@@ -134,6 +147,7 @@ export class ApprovalService {
   shutdown(): void {
     for (const [id, w] of this.waiters) {
       clearTimeout(w.timer);
+      w.detach();
       w.resolve({ decision: 'expired', note: '서버가 종료되어 승인 대기를 멈췄습니다.' });
       this.waiters.delete(id);
     }

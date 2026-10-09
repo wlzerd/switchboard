@@ -39,6 +39,8 @@ interface ModuleContext {
   dataDir: string;
   log: { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void };
   emit: (message: InboundMessage) => void;
+  /** 지금 상태의 문제를 모듈 화면에 띄웁니다 (토큰 만료 등). 빈 문자열이면 지웁니다. */
+  status: (detail: string) => void;
   fetch: typeof fetch;
   meta: { agentId: string | null; agentName: string | null; taskId: string | null } | null;
 }
@@ -90,6 +92,7 @@ async function init(msg: InitMessage): Promise<void> {
       error: (m) => send({ t: 'log', level: 'error', msg: String(m) }),
     },
     emit: (message) => send({ t: 'inbound', message }),
+    status: (detail) => send({ t: 'status', detail: String(detail ?? '') }),
     fetch: guardedFetch,
     meta: null,
   };

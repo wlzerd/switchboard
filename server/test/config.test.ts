@@ -74,10 +74,26 @@ describe('SECRETS_KEY', () => {
 });
 
 describe('기타 형식', () => {
-  it('TRUST_PROXY 는 true/false/1/0 만 받는다 (대소문자 무시)', () => {
+  it('TRUST_PROXY 는 true/false/1/0 과 프록시 IP 목록을 받는다 (대소문자 무시)', () => {
     expect(parseConfig({ ...base, TRUST_PROXY: 'TRUE' }, '/repo').trustProxy).toBe(true);
+    expect(parseConfig({ ...base, TRUST_PROXY: '1' }, '/repo').trustProxy).toBe(true);
     expect(parseConfig({ ...base, TRUST_PROXY: '0' }, '/repo').trustProxy).toBe(false);
-    expect(issues({ TRUST_PROXY: 'yes' }).join()).toContain("TRUST_PROXY: true 또는 false 여야 합니다. 현재 값 'yes'");
+    expect(parseConfig({ ...base, TRUST_PROXY: 'loopback' }, '/repo').trustProxy).toEqual(['loopback']);
+    expect(parseConfig({ ...base, TRUST_PROXY: ' 10.0.0.1 , 10.0.0.0/8,::1 ' }, '/repo').trustProxy).toEqual(['10.0.0.1', '10.0.0.0/8', '::1']);
+    expect(issues({ TRUST_PROXY: 'yes' }).join()).toContain("TRUST_PROXY: true · false · 프록시 IP 목록(쉼표로 구분, 같은 컴퓨터의 프록시는 loopback) 중 하나여야 합니다. 현재 값 'yes'");
+    // 단계 수(숫자)는 Fastify 가 받지 않으므로 오류로 알립니다 (1 은 예전처럼 true).
+    expect(issues({ TRUST_PROXY: '2' }).join()).toContain('TRUST_PROXY:');
+    expect(issues({ TRUST_PROXY: '10.0.0.1, evil' }).join()).toContain('TRUST_PROXY:');
+    expect(issues({ TRUST_PROXY: ',' }).join()).toContain('TRUST_PROXY:');
+  });
+
+  it('새 한도: AGENT_QUEUE_MAX · DELEGATION_MAX_ROUNDS · ACTIVITY_KEEP 의 경계', () => {
+    const c = parseConfig(base, '/repo');
+    expect([c.agentQueueMax, c.delegationMaxRounds, c.activityKeep]).toEqual([50, 3, 5000]);
+    expect(parseConfig({ ...base, AGENT_QUEUE_MAX: '1', DELEGATION_MAX_ROUNDS: '1', ACTIVITY_KEEP: '100' }, '/repo').agentQueueMax).toBe(1);
+    expect(issues({ AGENT_QUEUE_MAX: '0' }).join()).toContain('AGENT_QUEUE_MAX: 1 이상 10000 이하여야 합니다');
+    expect(issues({ DELEGATION_MAX_ROUNDS: '21' }).join()).toContain('DELEGATION_MAX_ROUNDS: 1 이상 20 이하여야 합니다');
+    expect(issues({ ACTIVITY_KEEP: '99' }).join()).toContain('ACTIVITY_KEEP: 100 이상 1000000 이하여야 합니다');
   });
 
   it('PUBLIC_URL 은 http(s)만, 끝 슬래시는 뗀다', () => {

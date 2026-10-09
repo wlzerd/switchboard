@@ -56,13 +56,42 @@ export function windowProblem(value: string): string | null {
 /** '/pattern/flags' 또는 'pattern' 정규식 검사 */
 export function regexProblem(value: string): string | null {
   const slash = /^\/(.*)\/([dgimsuvy]*)$/s.exec(value);
+  const source = slash ? (slash[1] as string) : value;
   try {
-    if (slash) new RegExp(slash[1] as string, slash[2]);
+    if (slash) new RegExp(source, slash[2]);
     else new RegExp(value);
-    return null;
   } catch (err) {
     return `정규식을 해석할 수 없습니다: ${(err as Error).message}`;
   }
+  return slowConstruct(source);
+}
+
+/**
+ * 서버가 거부하는 구조(입력 길이에 비례해 끝나게 검사할 수 없음): 역참조 · 앞 보기.
+ * 글자 그대로 쓴 \\1 이나 [(?=] 처럼 문자 집합 안의 글자는 건너뜁니다. 문구는 서버와 같습니다.
+ */
+export function slowConstruct(source: string): string | null {
+  let inClass = false;
+  for (let i = 0; i < source.length; i += 1) {
+    const c = source[i];
+    if (c === '\\') {
+      const next = source[i + 1] ?? '';
+      if (!inClass && (/[1-9]/.test(next) || (next === 'k' && source[i + 2] === '<'))) {
+        return '역참조(\\1 · \\k<이름>)가 있는 정규식은 쓸 수 없습니다. 입력이 길면 검사가 끝나지 않을 수 있습니다.';
+      }
+      i += 1;
+      continue;
+    }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      continue;
+    }
+    if (c === '[') inClass = true;
+    else if (c === '(' && source[i + 1] === '?' && (source[i + 2] === '=' || source[i + 2] === '!')) {
+      return '앞 보기((?=…) · (?!…))가 있는 정규식은 쓸 수 없습니다. 입력이 길면 검사가 끝나지 않을 수 있습니다.';
+    }
+  }
+  return null;
 }
 
 const ENV_REF = /^\$env:([A-Z_][A-Z0-9_]*)$/;

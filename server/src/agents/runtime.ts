@@ -7,7 +7,7 @@ import type { AnthropicService } from '../anthropic/service.ts';
 import type { Config } from '../config/env.ts';
 import { sha256 } from '../crypto/secrets.ts';
 import type { AgentRow, ReportTarget, Store, TaskRow, TaskStep } from '../db/store.ts';
-import { AnthropicCallError, AppError } from '../errors.ts';
+import { AnthropicCallError, AppError, LimitError } from '../errors.ts';
 import type { AgentLiveStatus, EventBus } from '../events/bus.ts';
 import type { GuardState } from '../guards/guards.ts';
 import { assertDailyBudget, assertStep, dayKey } from '../limits/limits.ts';
@@ -44,6 +44,10 @@ export interface TaskInput {
   delegation?: DelegationOrigin | null;
   /** 사용자가 직접 시작한 하트비트 (보고가 없어도 끝났다는 것을 알려 줌) */
   manual?: boolean;
+  /** 이 요청에서 에이전트별로 일을 맡긴 횟수 (결과를 받고 또 맡기는 왕복을 셈) */
+  rounds?: Record<string, number>;
+  /** 예약 실행이면 그 예약 id (같은 예약이 겹쳐 쌓이지 않게) */
+  scheduleId?: string;
 }
 
 /** 작업이 끝났을 때 AgentManager 에 알리는 내용 (위임 결과 반환 · 하트비트 알림) */
@@ -74,6 +78,8 @@ export interface RuntimeDeps {
   serverToolLevel: Map<string, number>;
   /** 화면 제어 도구 묶음을 거절한 모델 */
   noComputer: Set<string>;
+  /** 시스템 프롬프트에 넣을 관리 중인 프로젝트 */
+  projectsFor: (agent: AgentRow) => { name: string; path: string; note: string; watch: boolean }[];
   deliver: (agent: AgentRow, env: ToolEnv, moduleId: string, target: string, text: string) => Promise<string>;
   acquireSlot: (signal: AbortSignal) => Promise<() => void>;
   onFinished: () => void;
@@ -83,6 +89,8 @@ export interface RuntimeDeps {
 type Block = Record<string, unknown> & { type?: unknown };
 
 const RETRY_LIMIT = 3;
+/** 서버 측 대화 압축이 연달아 이만큼 넘게 일어나면 멈춥니다 (압축은 단계 수에 넣지 않으므로 따로 셈) */
+const MAX_COMPACTIONS_IN_ROW = 3;
 const MAX_STEPS_KEPT = 30;
 const COMPACTION_BETA = 'compact-2026-01-12';
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
@@ -153,13 +161,22 @@ class TaskFailure extends Error {
   }
 }
 
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
+/** 기다리기. 작업이 취소되면 바로 깨고, 다 기다렸으면 취소 리스너를 뗍니다 (긴 작업에서 리스너가 쌓이지 않게). */
+export function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener('abort', () => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = (): void => {
       clearTimeout(t);
       resolve();
-    }, { once: true });
+    };
+    const t = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -173,6 +190,7 @@ const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 interface Running {
   task: TaskRow;
   threadId: string;
+  scheduleId: string | null;
   abort: AbortController;
   quiet: boolean;
 }
@@ -219,6 +237,11 @@ export class AgentRuntime {
   /** 작업을 줄 세웁니다. 콘솔에 바로 보이도록 사용자 메시지를 먼저 타임라인에 넣습니다 (조용한 작업은 넣지 않음). */
   enqueue(input: TaskInput): TaskRow {
     const agent = this.d.store.getAgent(this.agentId);
+    // 대기열이 끝없이 쌓이지 않게 합니다 (채널 메시지 폭주 · 일시정지 중 쌓인 일 등). 기록을 남기기 전에 막습니다.
+    const max = this.d.config.agentQueueMax;
+    if (this.queue.length >= max) {
+      throw new LimitError('queue_full', `'${agent.name}'의 대기열이 가득 차(${max}건) 새 작업을 받지 않았습니다. 대기 중인 작업을 취소하거나 끝나기를 기다리세요.`, { max });
+    }
     const thread = this.d.store.getOrCreateThread(this.agentId, input.source, input.sourceLabel);
     const title = input.title ?? input.text.replace(/\s+/g, ' ').slice(0, 60);
     const quiet = input.quiet === true;
@@ -249,6 +272,18 @@ export class AgentRuntime {
     return this.running.size > 0 || this.queue.length > 0;
   }
 
+  /** 대기열 길이 (조용한 작업 포함 · 상한 비교용) */
+  queueLength(): number {
+    return this.queue.length;
+  }
+
+  /** 이 예약의 이전 실행이 대기 중이거나 실행 중인지 (예약이 겹쳐 쌓이지 않게) */
+  hasSchedule(scheduleId: string): boolean {
+    if (this.queue.some((q) => q.input.scheduleId === scheduleId)) return true;
+    for (const r of this.running.values()) if (r.scheduleId === scheduleId) return true;
+    return false;
+  }
+
   /** 대기열에서 시작할 수 있는 작업을 꺼내 실행합니다 (같은 대화는 하나씩, 에이전트 동시 작업 한도까지). */
   pump(): void {
     const agent = this.d.store.getAgent(this.agentId);
@@ -262,7 +297,7 @@ export class AgentRuntime {
       }
       this.queue.splice(i, 1);
       const abort = new AbortController();
-      this.running.set(item.task.id, { task: item.task, threadId: item.task.threadId, abort, quiet: item.input.quiet === true });
+      this.running.set(item.task.id, { task: item.task, threadId: item.task.threadId, scheduleId: item.input.scheduleId ?? null, abort, quiet: item.input.quiet === true });
       this.busyThreads.add(item.task.threadId);
       void this.runWithSlot(item.input, item.task, abort);
     }
@@ -413,8 +448,10 @@ export class AgentRuntime {
       reportTo: input.reportTo ?? null,
       chain: input.chain ?? [],
       delegation: input.delegation ?? null,
+      rounds: input.rounds ?? {},
       deferred: false,
       grants: new Set<string>(),
+      setupShown: new Set<string>(),
       screen: null,
       sink,
     };
@@ -438,6 +475,7 @@ export class AgentRuntime {
       const fallback = config.refusalFallback === 'default' && model?.fallback === true;
 
       let step = 0;
+      let compactions = 0;
       let retries = 0;
       let parseRetries = 0;
       let contextRetry = false;
@@ -462,6 +500,7 @@ export class AgentRuntime {
           peers: store.listAgents(),
           rootDir: config.rootDir,
           screen: hadComputer,
+          projects: this.d.projectsFor(agent),
         });
         const hash = sha256(`${agent.model}\n${system}\n${JSON.stringify(tools)}`);
         const threadNow = store.getThread(thread.id);
@@ -558,9 +597,18 @@ export class AgentRuntime {
           const details = final.stop_details as { category?: string | null; explanation?: string | null } | null;
           throw new TaskFailure('모델이 요청을 거절했습니다', `안전 분류기가 이 요청을 거절했습니다${details?.category ? ` (분류: ${details.category})` : ''}.${details?.explanation ? ` ${details.explanation}` : ''} 표현을 바꾸거나 다른 모델을 고르세요.`);
         }
+        // 압축이 아닌 응답이 오면 연속 압축 횟수를 다시 셉니다.
+        if (stop !== 'compaction') compactions = 0;
         if (stop === 'pause_turn' || stop === 'compaction') {
           store.appendMessage(thread.id, 'assistant', content);
-          step -= stop === 'compaction' ? 1 : 0;
+          if (stop === 'compaction') {
+            // 압축은 단계로 세지 않으므로, 연달아 되풀이되면 따로 멈춥니다 (단계 한도를 우회해 끝없이 돌지 않게).
+            compactions += 1;
+            if (compactions > MAX_COMPACTIONS_IN_ROW) {
+              throw new TaskFailure('대화 압축이 되풀이됩니다', `서버 측 대화 압축이 ${MAX_COMPACTIONS_IN_ROW}번 넘게 연달아 일어나 멈췄습니다. 대화가 너무 길거나 마지막 입력이 너무 큽니다. 새 대화로 시작하거나 입력을 줄이세요.`);
+            }
+            step -= 1;
+          }
           continue;
         }
         if (stop === 'model_context_window_exceeded') {

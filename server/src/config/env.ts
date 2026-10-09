@@ -8,7 +8,8 @@ export interface Config {
   host: string;
   port: number;
   publicUrl: string | null;
-  trustProxy: boolean;
+  /** 리버스 프록시 신뢰: false, true(모두 · 위조 가능), 프록시 IP 목록 */
+  trustProxy: boolean | string[];
   logLevel: LogLevel;
 
   adminPassword: string;
@@ -52,6 +53,12 @@ export interface Config {
 
   /** 위임이 이어질 수 있는 최대 단계 (A→B→C 는 2단계) */
   delegationMaxDepth: number;
+  /** 같은 요청에서 같은 에이전트에게 다시 맡길 수 있는 횟수 (결과를 받고 또 맡기는 왕복) */
+  delegationMaxRounds: number;
+  /** 에이전트 하나의 대기열에 쌓일 수 있는 작업 수 */
+  agentQueueMax: number;
+  /** 활동 기록을 이만큼만 남기고 오래된 것부터 지웁니다 */
+  activityKeep: number;
   /** 하트비트 최소 간격(분) */
   heartbeatMinMinutes: number;
 }
@@ -104,6 +111,23 @@ class Reader {
     if ((allowed as readonly string[]).includes(v)) return v as T;
     this.issues.push(`${name}: ${allowed.join(' | ')} 중 하나여야 합니다. 현재 값 '${v}'`);
     return def;
+  }
+
+  /**
+   * 리버스 프록시 신뢰. true 는 X-Forwarded-For 맨 앞 값(클라이언트가 마음대로 넣을 수 있는 값)까지 믿으므로,
+   * 프록시가 같은 컴퓨터면 loopback, 아니면 프록시 IP 목록을 쓰는 것이 안전합니다 (그 프록시가 붙인 주소만 믿음).
+   */
+  trustProxy(name: string): boolean | string[] {
+    const v = raw(this.env, name);
+    if (v === undefined) return false;
+    const lower = v.toLowerCase();
+    if (lower === 'true' || v === '1') return true;
+    if (lower === 'false' || v === '0') return false;
+    const parts = v.split(',').map((x) => x.trim()).filter((x) => x !== '');
+    const ipLike = /^(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9a-fA-F:]*:[0-9a-fA-F:.]*)(?:\/\d{1,3})?$/;
+    if (parts.length > 0 && parts.every((x) => ipLike.test(x) || x === 'loopback' || x === 'linklocal' || x === 'uniquelocal')) return parts;
+    this.issues.push(`${name}: true · false · 프록시 IP 목록(쉼표로 구분, 같은 컴퓨터의 프록시는 loopback) 중 하나여야 합니다. 현재 값 '${v}'`);
+    return false;
   }
 
   str(name: string, def: string): string {
@@ -177,7 +201,7 @@ export function parseConfig(env: Env, rootDir: string): Config {
     host: r.str('HOST', '0.0.0.0'),
     port: r.int('PORT', 8787, 1, 65535),
     publicUrl: r.url('PUBLIC_URL'),
-    trustProxy: r.bool('TRUST_PROXY', false),
+    trustProxy: r.trustProxy('TRUST_PROXY'),
     logLevel: r.oneOf('LOG_LEVEL', 'info', ['debug', 'info', 'warn', 'error'] as const),
 
     adminPassword: r.requiredMin('ADMIN_PASSWORD', 12, '관리자 로그인에 쓰는 비밀번호입니다.'),
@@ -220,9 +244,23 @@ export function parseConfig(env: Env, rootDir: string): Config {
     guardLoopRepeat: r.int('GUARD_LOOP_REPEAT', 5, 2, 100),
 
     delegationMaxDepth: r.int('DELEGATION_MAX_DEPTH', 3, 1, 10),
+    delegationMaxRounds: r.int('DELEGATION_MAX_ROUNDS', 3, 1, 20),
+    agentQueueMax: r.int('AGENT_QUEUE_MAX', 50, 1, 10000),
+    activityKeep: r.int('ACTIVITY_KEEP', 5000, 100, 1_000_000),
     heartbeatMinMinutes: r.int('HEARTBEAT_MIN_MINUTES', 5, 1, 1440),
   };
 
   if (r.issues.length > 0) throw new ConfigError(r.issues);
   return config;
+}
+
+/**
+ * 화면 주소: PUBLIC_URL 이 있으면 그 주소, 없으면 서버 컴퓨터에서 여는 주소(http://localhost:PORT).
+ * 에이전트가 사용자에게 보내는 안내(설정 화면 열기 등)에 씁니다.
+ */
+export function appLink(config: Pick<Config, 'publicUrl' | 'host' | 'port'>, pathname: string): string {
+  const p = pathname.startsWith('/') ? pathname : `/${pathname}`;
+  if (config.publicUrl) return `${config.publicUrl.replace(/\/+$/, '')}${p}`;
+  const host = config.host === '0.0.0.0' || config.host === '::' || config.host === '' ? 'localhost' : config.host.includes(':') ? `[${config.host}]` : config.host;
+  return `http://${host}:${config.port}${p}`;
 }

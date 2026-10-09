@@ -202,8 +202,10 @@ function TopBar({ onLogout }: { onLogout: () => void }) {
 const NAV: { page: Route['page']; label: string; icon: string; path: string }[] = [
   { page: 'canvas', label: '캔버스', icon: 'graph', path: '/' },
   { page: 'console', label: '콘솔', icon: 'terminal', path: '/console' },
+  { page: 'projects', label: '프로젝트', icon: 'folder', path: '/projects' },
   { page: 'modules', label: '모듈', icon: 'cube', path: '/modules' },
   { page: 'guard', label: '권한 · 훅', icon: 'shield', path: '/guard' },
+  { page: 'settings', label: '설정', icon: 'key', path: '/settings' },
   { page: 'theme', label: '테마', icon: 'palette', path: '/theme' },
 ];
 
@@ -211,6 +213,9 @@ function Sidebar({ route }: { route: Route }) {
   const overview = useApp((s) => s.overview);
   const agents = overview?.agents ?? [];
   const moduleCount = (overview?.modules.length ?? 0) + (overview?.skills.length ?? 0);
+  const projectCount = agents.reduce((n, a) => n + (a.projectCount ?? 0), 0);
+  // 설정 확인이 필요함: 켜 둔 모듈의 필수 설정이 비었거나, 화면에서 관리할 값이 아직 .env 에 있음 (꺼 둔 모듈은 켤 때 알림)
+  const settingsAttention = (overview?.modules ?? []).some((m) => (m.enabled && m.settingsMissing.length > 0) || m.envLeft.length > 0);
   return (
     <nav className="sidebar" aria-label="주 메뉴">
       <div className="nav-list">
@@ -219,6 +224,8 @@ function Sidebar({ route }: { route: Route }) {
             <Icon name={n.icon} />
             {n.label}
             {n.page === 'modules' ? <span className="nav-count">{moduleCount}</span> : null}
+            {n.page === 'projects' ? <span className="nav-count">{projectCount}</span> : null}
+            {n.page === 'settings' && settingsAttention ? <span className="status-dot nav-dot" style={{ background: 'var(--warn)' }} aria-label="확인이 필요한 설정 있음" /> : null}
           </button>
         ))}
       </div>

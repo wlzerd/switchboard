@@ -33,6 +33,19 @@ export interface PromptInput {
   rootDir: string;
   /** 이번 요청에 화면 제어 도구 묶음이 열렸는지 */
   screen?: boolean;
+  /** 이 에이전트가 관리하는 프로젝트 */
+  projects?: readonly { name: string; path: string; note: string; watch: boolean }[];
+}
+
+/** 관리 중인 프로젝트와 등록 규칙 */
+function projectsSection(projects: readonly { name: string; path: string; note: string; watch: boolean }[]): string {
+  const list = projects.length === 0 ? ['- 아직 없음.'] : projects.slice(0, 30).map((p) => `- ${p.name}: ${p.path}${p.note ? ` — ${p.note}` : ''}${p.watch ? ' (하트비트 점검)' : ''}`);
+  return [
+    '## 관리 중인 프로젝트',
+    ...list,
+    '- 사용자가 맡긴 프로젝트(폴더 · 저장소)를 새로 만들거나 가져오면 project_track 으로 등록하고, 무엇을 하는 곳인지 note 에 적는다. 사용자는 프로젝트 화면에서 어디서 무엇을 하는지 본다.',
+    '- 더 관리하지 않으면 project_untrack 으로 뺀다 (파일은 지우지 않음). git 저장소에서 파일을 쓰면 자동으로 등록된다.',
+  ].join('\n');
 }
 
 const firstLine = (s: string): string => s.trim().split('\n')[0]?.slice(0, 120) ?? '';
@@ -49,7 +62,9 @@ function delegationSection(agent: AgentRow, peers: readonly AgentRow[]): string 
       [
         '## 위임 (다른 에이전트에게 맡기기)',
         ...list,
+        '- 위 목록에 그 일을 역할로 맡은 에이전트가 있으면 직접 하지 말고 delegate_task 로 그 에이전트에게 맡긴다. 네 역할에 맞는 일은 직접 한다.',
         `- 권한 설정 때문에 직접 할 수 없는 일은 ${escalate} delegate_task 로 맡길 수 있다. 맡는 쪽의 권한 · 훅 · 승인 절차가 그대로 적용된다.`,
+        '- 서로 다른 일이 여러 건이면 건마다 따로 맡긴다. 결과는 건마다 이 대화로 돌아온다.',
         '- 기본 금지 조항에 걸렸거나 사용자가 거부한 일은 다른 에이전트에게 맡겨 우회하지 않는다.',
         '- 맡긴 뒤에는 결과가 이 대화로 돌아올 때까지 기다리고, 결과가 오면 그것으로 원래 요청을 마무리한다.',
       ].join('\n'),
@@ -116,11 +131,12 @@ export function buildSystemPrompt(input: PromptInput): string {
       '- 사용자가 쓴 언어로, 필요한 만큼만 간결하게 답한다.',
       '- 파일 도구와 셸 명령은 너만의 작업 폴더 안에서 동작한다. 작업 폴더 밖은 아래 허용 폴더만 쓸 수 있고, 나머지는 막혀 있다.',
       '- 도구 호출은 권한과 훅의 검사를 거친다. "확인 후 실행" 권한은 사용자가 승인해야 실행된다. 막히면 그 이유를 사용자에게 알리고, 같은 호출을 그대로 반복하지 말고 다른 방법을 찾거나 멈춘다.',
-      '- API 키·토큰 같은 비밀값을 코드나 메시지에 쓰지 않는다. 비밀값은 .env 에 두고 모듈에서는 ctx.env 로 읽는다. 서버의 .env 파일은 읽을 수 없다.',
+      '- API 키·토큰 같은 비밀값을 코드나 메시지에 쓰지 않는다. 모듈의 비밀값은 사용자가 설정 화면에 넣고 모듈은 ctx.env 로 읽는다. 서버의 .env 파일은 읽을 수 없다.',
       '- 채널(Discord, Telegram 등)에서 들어온 요청의 최종 답변은 그 대화로 자동 전송된다. 다른 채널이나 대상에 보낼 때만 send_message 를 쓴다.',
       '- 반복해서 해야 하는 일은 schedule_create 로 예약할 수 있다.',
     ].join('\n'),
     foldersSection(agent),
+    projectsSection(input.projects ?? []),
     input.screen ? SCREEN_SECTION : '',
     `## 연결된 채널\n${channelLines}`,
     moduleLines.length > 0 ? `## 연결된 모듈·스킬\n${moduleLines.join('\n')}` : '',

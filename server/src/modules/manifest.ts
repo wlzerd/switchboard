@@ -30,6 +30,22 @@ const envSchema = z.object({
   name: z.string().regex(ENV_NAME_RE, { error: '환경 변수 이름은 대문자로 시작하고 대문자·숫자·밑줄만 쓸 수 있습니다 (예: NOTION_TOKEN).' }),
   required: z.boolean().default(true),
   description: z.string().max(200).default(''),
+  /** 설정 화면에 보일 짧은 이름 (없으면 name) */
+  label: z.string().min(1).max(40).optional(),
+  /** 비밀값(토큰 · 비밀번호)인지. 비밀값은 SECRETS_KEY 로 암호화해 저장하고 화면에는 끝 4자리만 보입니다. 없으면 이름으로 짐작합니다. */
+  secret: z.boolean().optional(),
+  /** 값을 만드는 곳(토큰 발급 페이지 등). 설정 화면과 '설정 필요' 안내에 링크로 보입니다. https 만 */
+  url: z
+    .string()
+    .max(500)
+    .refine((v) => {
+      try {
+        return new URL(v).protocol === 'https:';
+      } catch {
+        return false;
+      }
+    }, { error: 'env 의 url 은 https:// 로 시작하는 주소여야 합니다 (값을 만드는 페이지).' })
+    .optional(),
 });
 
 export const manifestSchema = z.object({

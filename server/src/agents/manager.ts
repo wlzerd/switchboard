@@ -8,7 +8,7 @@ import type { ApprovalService } from '../approvals/service.ts';
 import type { Config } from '../config/env.ts';
 import { randomId } from '../crypto/secrets.ts';
 import type { AgentModuleRow, AgentRow, ModuleRow, ReportTarget, Store, TaskRow } from '../db/store.ts';
-import { ConflictError, ModuleError, NotFoundError, PermissionDeniedError, ValidationError } from '../errors.ts';
+import { ConflictError, LimitError, ModuleError, NotFoundError, PermissionDeniedError, ValidationError } from '../errors.ts';
 import type { AgentLiveStatus, EventBus } from '../events/bus.ts';
 import type { GuardState } from '../guards/guards.ts';
 import type { HookEngine } from '../hooks/engine.ts';
@@ -20,7 +20,9 @@ import type { ModuleRegistry } from '../modules/registry.ts';
 import type { SourceFile } from '../modules/static-check.ts';
 import { folderLabel, validateFolders } from '../permissions/folders.ts';
 import { addAlways, BASE_PERMISSIONS, evaluatePermission, messagePermission, validatePermissionSet, type PermissionDef, type PermissionSet } from '../permissions/policy.ts';
+import type { ProjectService } from '../projects/service.ts';
 import type { SchedulerService } from '../scheduler/service.ts';
+import type { SettingsService } from '../settings/service.ts';
 import { builtinTools, type DelegateInput, type HeartbeatToolInput, type SkillInput, type ToolServices } from '../tools/builtin.ts';
 import type { ToolEnv } from '../tools/types.ts';
 import {
@@ -90,6 +92,10 @@ export interface ManagerDeps {
   presets: Map<string, Preset>;
   /** 기본 금지 조항의 비밀 폴더 이름 (허용 폴더로 둘 수 없음) */
   secretDirs: readonly string[];
+  /** 관리 중인 프로젝트 */
+  projects: ProjectService;
+  /** 모듈 설정 (없으면 '설정 필요' 카드를 띄우지 않음) */
+  settings?: SettingsService;
 }
 
 export interface AgentInput {
@@ -130,6 +136,22 @@ export class AgentManager {
       schedules: deps.scheduler,
       delegate: (agent, env, input) => this.delegate(agent, env, input),
       heartbeat: (agent, env, input) => this.setHeartbeatFromTool(agent, env, input),
+      projects: {
+        track: (env, abs, input) => {
+          const task = this.d.store.findTask(env.taskId);
+          const { row, created } = deps.projects.track(env.agent, abs, input, { ...deps.projects.originOf(task, env), taskId: env.taskId });
+          const where = deps.projects.view(row, env.agent).displayPath;
+          return created
+            ? `프로젝트 '${row.name}'(${where})을(를) 등록했습니다${row.watch ? ' · 하트비트 점검에 포함' : ''}. 사용자가 프로젝트 화면에서 볼 수 있습니다.`
+            : `프로젝트 '${row.name}'(${where})을(를) 고쳤습니다${row.watch ? ' · 하트비트 점검에 포함' : ''}.`;
+        },
+        untrack: (env, abs) => {
+          const p = this.d.store.findProjectByPath(env.agent.id, abs);
+          if (!p) throw new ValidationError('project_not_tracked', `'${abs}'은(는) 등록된 프로젝트가 아닙니다. 등록할 때 쓴 경로를 확인하세요.`);
+          deps.projects.remove(p.id);
+          return `프로젝트 '${p.name}'을(를) 목록에서 뺐습니다. 폴더와 파일은 그대로입니다.`;
+        },
+      },
     };
     this.builtins = builtinTools(services);
     for (const t of this.builtins) deps.registry.reservedToolNames.add(t.name);
@@ -143,6 +165,8 @@ export class AgentManager {
       builtins: new Map(this.builtins.map((t) => [t.name, t])),
       defs: () => this.permissionDefs(),
       screenLocks: this.screenLocks,
+      activity: deps.projects,
+      ...(deps.settings ? { setupNeeds: settingsNeeds(deps.settings, deps.store) } : {}),
     });
   }
 
@@ -162,15 +186,27 @@ export class AgentManager {
     this.d.scheduler.onDue = (run) => {
       const agent = this.d.store.getAgent(run.agentId);
       const reply = run.reply && this.d.store.findModule(run.reply.moduleId) ? run.reply : null;
-      this.enqueue({
-        agentId: agent.id,
-        source: reply ? `${reply.moduleId}:${reply.target}` : `schedule:${run.scheduleId}`,
-        sourceLabel: `예약 실행 · ${run.label}`,
-        origin: 'schedule',
-        text: run.prompt,
-        reply,
-        title: `예약 · ${run.prompt.slice(0, 40)}`,
-      });
+      // 일시정지 중이거나 이전 실행이 아직 끝나지 않았으면 쌓지 않고 건너뜁니다 (재개하는 순간 밀린 실행이 한꺼번에 돌지 않게).
+      const why = agent.paused ? '일시정지 중' : this.runtimeFor(agent.id).hasSchedule(run.scheduleId) ? '이전 실행이 아직 끝나지 않음' : null;
+      if (why) {
+        this.skipSchedule(agent, run.scheduleId, run.label, why);
+        return;
+      }
+      try {
+        this.enqueue({
+          agentId: agent.id,
+          source: reply ? `${reply.moduleId}:${reply.target}` : `schedule:${run.scheduleId}`,
+          sourceLabel: `예약 실행 · ${run.label}`,
+          origin: 'schedule',
+          text: run.prompt,
+          reply,
+          title: `예약 · ${run.prompt.slice(0, 40)}`,
+          scheduleId: run.scheduleId,
+        });
+      } catch (err) {
+        if (!(err instanceof LimitError)) throw err;
+        this.skipSchedule(agent, run.scheduleId, run.label, '대기열이 가득 참');
+      }
     };
 
     // 승인 후속 처리
@@ -196,6 +232,12 @@ export class AgentManager {
     });
   }
 
+  /** 예약 실행을 건너뛴 기록: 예약에 횟수를 남기고 활동에 알립니다. */
+  private skipSchedule(agent: AgentRow, scheduleId: string, label: string, why: string): void {
+    this.d.store.markScheduleSkipped(scheduleId, Date.now());
+    this.d.bus.activity({ type: 'schedule.skipped', category: 'agent', tone: 'wait', who: agent.name, text: `예약 건너뜀 · ${label} · ${why}`, agentId: agent.id, data: { scheduleId } });
+  }
+
   private runtimeFor(agentId: string): AgentRuntime {
     let rt = this.runtimes.get(agentId);
     if (!rt) {
@@ -212,6 +254,7 @@ export class AgentManager {
         guardState: this.d.guardState,
         serverToolLevel: this.serverToolLevel,
         noComputer: this.noComputer,
+        projectsFor: (agent) => this.d.projects.list(agent.id).map((p) => ({ name: p.name, path: p.path, note: p.note, watch: p.watch })),
         deliver: (agent, env, moduleId, target, text) => this.deliver(agent, env, moduleId, target, text),
         acquireSlot: (signal) => this.slots.acquire(signal),
         onFinished: () => this.pumpAll(),
@@ -230,9 +273,14 @@ export class AgentManager {
     return this.runtimeFor(input.agentId).enqueue(input);
   }
 
-  live(agentId: string): { status: AgentLiveStatus; detail: string | null; queued: TaskRow[]; running: TaskRow[] } {
+  live(agentId: string): { status: AgentLiveStatus; detail: string | null; queued: TaskRow[]; running: TaskRow[]; queueLength: number; queueMax: number } {
     const rt = this.runtimeFor(agentId);
-    return { status: rt.status, detail: rt.detail, queued: rt.queued(), running: rt.runningTasks() };
+    return { status: rt.status, detail: rt.detail, queued: rt.queued(), running: rt.runningTasks(), queueLength: rt.queueLength(), queueMax: this.d.config.agentQueueMax };
+  }
+
+  /** 대기열이 가득 차 채널 메시지를 받지 못했을 때 */
+  private dropForFullQueue(agent: AgentRow, moduleName: string, targetLabel: string, moduleId: string): void {
+    this.d.bus.activity({ type: 'message.dropped', category: 'agent', tone: 'error', who: agent.name, text: `대기열이 가득 차(${this.d.config.agentQueueMax}건) ${moduleName} ${targetLabel} 메시지를 받지 않았습니다.`, agentId: agent.id, moduleId });
   }
 
   cancelTask(taskId: string): boolean {
@@ -278,7 +326,7 @@ export class AgentManager {
       const m = this.d.store.getModule(item.moduleId);
       if (m.status === 'pending') throw new ValidationError('agent_module_pending', `모듈 '${m.manifest.name}'은(는) 아직 설치 승인 전이라 연결할 수 없습니다.`);
       const targets = Array.isArray(item.targets) ? item.targets.filter((t): t is string => typeof t === 'string' && t.trim() !== '').map((t) => t.trim()) : [];
-      const trigger = item.trigger === 'all' ? 'all' : 'direct';
+      const trigger = item.trigger === 'all' || item.trigger === 'none' ? item.trigger : 'direct';
       const config: AgentModuleRow['config'] = { targets, trigger };
       return { moduleId: m.id, config };
     });
@@ -503,7 +551,7 @@ export class AgentManager {
       source: 'heartbeat',
       sourceLabel: '하트비트',
       origin: 'heartbeat',
-      text: heartbeatPrompt(hb.checklist),
+      text: heartbeatPrompt(hb.checklist, this.d.projects.watched(agent).map((p) => ({ name: p.name, path: p.path, note: p.note }))),
       reply: null,
       title: '하트비트',
       quiet: true,
@@ -552,9 +600,17 @@ export class AgentManager {
     const task = input.task.trim();
     if (task.length < 5) throw new ValidationError('delegation_task', '맡길 일을 5자 이상으로, 그 에이전트가 이 대화를 몰라도 알 수 있게 적으세요.');
     const reason = input.reason.trim().slice(0, 500);
+    // 같은 일에서 같은 에이전트에게 결과를 받고 또 맡기는 왕복은 횟수를 제한합니다 (서로 끝없이 주고받지 않게).
+    // 횟수는 맡긴 일의 줄기마다 따로 셉니다: 한 작업에서 서로 다른 일 여러 건(이슈 여러 개 등)을 맡기면 건마다 1번째입니다.
+    const maxRounds = this.d.config.delegationMaxRounds;
+    const used = env.rounds[to.id] ?? 0;
+    if (used >= maxRounds) {
+      throw new ValidationError('delegation_rounds', `같은 일을 '${to.name}'에게 이미 ${used}번 맡겼습니다 (결과를 받고 다시 맡기는 왕복은 ${maxRounds}번까지). 직접 마무리하거나 할 수 없다고 답하세요.`);
+    }
+    const rounds = { ...env.rounds, [to.id]: used + 1 };
 
     // 맡긴 쪽 대화에 남는 위임 카드 (결과가 오면 상태가 바뀜)
-    const card = env.sink.timeline('delegate', { to: to.id, toName: to.name, task: task.slice(0, 500), reason: reason.slice(0, 300), status: 'sent' });
+    const card = env.sink.timeline('delegate', { to: to.id, toName: to.name, task: task.slice(0, 500), reason: reason.slice(0, 300), status: 'sent', round: used + 1, maxRounds });
     const row = this.enqueue({
       agentId: to.id,
       source: `delegation:${agent.id}`,
@@ -567,7 +623,7 @@ export class AgentManager {
       delegation: {
         fromAgentId: agent.id,
         cardId: card?.id ?? null,
-        back: { source: env.source, sourceLabel: env.sourceLabel, reply: env.reply, quiet: env.quiet, reportTo: env.reportTo, chain: env.chain, delegation: env.delegation },
+        back: { source: env.source, sourceLabel: env.sourceLabel, reply: env.reply, quiet: env.quiet, reportTo: env.reportTo, chain: env.chain, delegation: env.delegation, rounds },
       },
     });
     // 이 작업이 누군가에게서 맡은 일이었다면, 결과를 돌려줄 의무는 위임 결과를 받는 후속 작업으로 넘어갑니다.
@@ -621,8 +677,13 @@ export class AgentManager {
         reportTo: del.back.reportTo,
         chain: del.back.chain,
         delegation: del.back.delegation,
+        rounds: del.back.rounds ?? {},
       });
     } catch (err) {
+      if (err instanceof LimitError) {
+        this.d.bus.activity({ type: 'delegation.lost', category: 'agent', tone: 'error', who: toName, text: `${from.name}의 대기열이 가득 차 위임 결과를 돌려주지 못했습니다 (${label}).`, agentId: from.id });
+        return;
+      }
       if (!(err instanceof NotFoundError)) throw err;
     }
   }
@@ -636,6 +697,8 @@ export class AgentManager {
     for (const link of this.d.store.listAgentModules()) {
       if (link.moduleId !== moduleId) continue;
       const cfg = link.config;
+      // 도구만 쓰려고 연결한 에이전트는 메시지 · 자동 알림을 받지 않습니다.
+      if (cfg.trigger === 'none') continue;
       if (cfg.targets && cfg.targets.length > 0 && !cfg.targets.some((t) => t.toLowerCase() === msg.target.toLowerCase() || t.toLowerCase() === msg.targetLabel.toLowerCase())) continue;
       if ((cfg.trigger ?? 'direct') === 'direct' && !msg.direct) continue;
       const agent = this.d.store.getAgent(link.agentId);
@@ -646,29 +709,39 @@ export class AgentManager {
       }
       if (msg.quiet === true) {
         // 모듈의 자동 알림(새 메일 등): 에이전트가 알릴 것이 있다고 판단할 때만 화면과 보고 채널에 나타납니다.
-        this.enqueue({
-          agentId: agent.id,
-          source: `${moduleId}:${msg.target}`,
-          sourceLabel: `${mod.manifest.name} · ${msg.targetLabel}`,
-          origin: 'channel',
-          text: `${quietPreamble('event')}\n\n${msg.text}`,
-          reply: null,
-          quiet: true,
-          trigger: msg.text.slice(0, 1500),
-          reportTo: agent.report,
-        });
+        try {
+          this.enqueue({
+            agentId: agent.id,
+            source: `${moduleId}:${msg.target}`,
+            sourceLabel: `${mod.manifest.name} · ${msg.targetLabel}`,
+            origin: 'channel',
+            text: `${quietPreamble('event')}\n\n${msg.text}`,
+            reply: null,
+            quiet: true,
+            trigger: msg.text.slice(0, 1500),
+            reportTo: agent.report,
+          });
+        } catch (err) {
+          if (!(err instanceof LimitError)) throw err;
+          this.dropForFullQueue(agent, mod.manifest.name, msg.targetLabel, moduleId);
+        }
         continue;
       }
       this.d.bus.emit({ type: 'edge.pulse', from: `module:${moduleId}`, to: agent.id, kind: 'message' });
       this.d.bus.activity({ type: 'message.in', category: 'module', tone: 'module', who: mod.manifest.name, text: `${agent.name} ← ${msg.targetLabel} · ${msg.userName}`, agentId: agent.id, moduleId });
-      this.enqueue({
-        agentId: agent.id,
-        source: `${moduleId}:${msg.target}`,
-        sourceLabel: `${mod.manifest.name} · ${msg.targetLabel} · ${msg.userName}`,
-        origin: 'channel',
-        text: msg.text,
-        reply: { moduleId, target: msg.target },
-      });
+      try {
+        this.enqueue({
+          agentId: agent.id,
+          source: `${moduleId}:${msg.target}`,
+          sourceLabel: `${mod.manifest.name} · ${msg.targetLabel} · ${msg.userName}`,
+          origin: 'channel',
+          text: msg.text,
+          reply: { moduleId, target: msg.target },
+        });
+      } catch (err) {
+        if (!(err instanceof LimitError)) throw err;
+        this.dropForFullQueue(agent, mod.manifest.name, msg.targetLabel, moduleId);
+      }
     }
   }
 
@@ -704,8 +777,10 @@ export class AgentManager {
         kind: decision.decision === 'ask' ? 'permission' : 'hook',
         title: `${mod.manifest.name} ${target} 전송`,
         detail: { permission: decision.decision === 'ask' ? def.key : null, target, rule: asks.join(' / '), tool: 'send_message', input: body.slice(0, 2000) },
+        signal: env.signal,
       });
       const r = await wait;
+      if (r.decision === 'cancelled') throw new PermissionDeniedError('send_cancelled', '작업이 취소되어 보내지 않았습니다.');
       if (r.decision === 'deny') throw new PermissionDeniedError('send_rejected', '사용자가 전송을 거부했습니다.');
       if (r.decision === 'expired') throw new PermissionDeniedError('send_expired', r.note ?? '승인 대기 시간이 지나 보내지 않았습니다.');
     }
@@ -767,11 +842,12 @@ export class AgentManager {
         this.d.registry.installer.discard(staged.token);
         throw new PermissionDeniedError('quiet_needs_approval', `조용한 판단 중에는 승인이 필요한 스킬 설치를 할 수 없습니다: ${install.reasons.join(' / ')}`);
       }
-      const { wait } = this.d.approvals.request({ agentId: agent.id, agentName: agent.name, taskId: env.taskId, threadId: env.threadId, kind: 'hook', title: `스킬 설치 · ${input.title}`, detail: { permission: null, target: input.name, rule: install.reasons.join(' / '), tool: 'skill_create', input: input.code.slice(0, 2000) } });
+      const { wait } = this.d.approvals.request({ agentId: agent.id, agentName: agent.name, taskId: env.taskId, threadId: env.threadId, kind: 'hook', title: `스킬 설치 · ${input.title}`, detail: { permission: null, target: input.name, rule: install.reasons.join(' / '), tool: 'skill_create', input: input.code.slice(0, 2000) }, signal: env.signal });
       const r = await wait;
-      if (r.decision === 'deny' || r.decision === 'expired') {
+      if (r.decision === 'deny' || r.decision === 'expired' || r.decision === 'cancelled') {
         this.d.registry.installer.discard(staged.token);
-        throw new PermissionDeniedError('skill_rejected', r.decision === 'deny' ? '사용자가 스킬 설치를 거부했습니다.' : '승인 대기 시간이 지나 스킬을 설치하지 않았습니다.');
+        const why = r.decision === 'deny' ? '사용자가 스킬 설치를 거부했습니다.' : r.decision === 'cancelled' ? '작업이 취소되어 스킬을 설치하지 않았습니다.' : '승인 대기 시간이 지나 스킬을 설치하지 않았습니다.';
+        throw new PermissionDeniedError('skill_rejected', why);
       }
     }
 
@@ -866,8 +942,10 @@ export class AgentManager {
         input: `권한 ${row.manifest.permissions.net.length ? `net(${row.manifest.permissions.net.join(', ')})` : '없음'} · env ${row.manifest.env.map((e) => e.name).join(', ') || '없음'}`,
         moduleId: row.id,
       },
+      signal: env.signal,
     });
     const r = await wait;
+    if (r.decision === 'cancelled') return `작업이 취소되어 모듈 '${row.manifest.name}' 설치 승인을 더 기다리지 않습니다. 모듈은 승인 대기로 남아 있어 모듈 화면에서 설치하거나 거부할 수 있습니다.`;
     if (r.decision === 'deny') return `사용자가 모듈 '${row.manifest.name}' 설치를 거부했습니다. 파일은 지웠습니다.`;
     if (r.decision === 'expired') return r.note ?? `승인 대기 시간이 지나 모듈 '${row.manifest.name}'을(를) 설치하지 않았습니다.`;
     const after = this.d.store.findModule(row.id);
@@ -893,4 +971,9 @@ export class AgentManager {
 function bumpPatch(v: string): string {
   const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
   return m ? `${m[1]}.${m[2]}.${Number(m[3]) + 1}` : '1.0.0';
+}
+
+/** 실행기에 넘길 '설정 필요' 항목 조회 */
+function settingsNeeds(settings: SettingsService, store: Store): (moduleId: string) => ReturnType<SettingsService['setupNeeds']> {
+  return (moduleId) => settings.setupNeeds(store.getModule(moduleId));
 }

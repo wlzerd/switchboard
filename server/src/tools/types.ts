@@ -16,6 +16,8 @@ export interface DelegationOrigin {
     chain: string[];
     /** 맡긴 쪽도 누군가에게서 맡은 일이었다면, 그 결과를 돌려줄 의무를 이어받습니다 */
     delegation: DelegationOrigin | null;
+    /** 결과를 받은 쪽 작업이 이어받을 왕복 횟수 (같은 일로 같은 에이전트에게 몇 번 맡겼는지) */
+    rounds?: Record<string, number>;
   };
 }
 
@@ -39,6 +41,8 @@ export interface ToolEnv {
   chain: string[];
   /** 이 작업이 다른 에이전트가 맡긴 일이면 그 정보 */
   delegation: DelegationOrigin | null;
+  /** 이 일의 줄기에서 에이전트별로 맡긴 횟수 (결과를 받고 다시 맡긴 왕복. 같은 작업 안의 서로 다른 일은 따로 셈) */
+  rounds: Record<string, number>;
   /** 이 작업 중에 다른 에이전트에게 일을 맡겼는지 (그러면 결과 반환 의무가 후속 작업으로 넘어감) */
   deferred: boolean;
   /** 타임라인 · 활동 · 실시간 이벤트를 남기는 통로 */
@@ -47,6 +51,8 @@ export interface ToolEnv {
   grants: Set<string>;
   /** 이 작업의 화면 제어 기록 (타임라인 카드 하나에 이어서 쌓음) */
   screen: ScreenRun | null;
+  /** 이 작업에서 이미 '설정 필요' 카드를 띄운 모듈 (같은 모듈은 한 번만) */
+  setupShown: Set<string>;
 }
 
 export interface ScreenRun {

@@ -568,6 +568,32 @@ function Inspector({ agent, overview, onClose }: { agent: AgentView; overview: O
           ))}
         </div>
       </div>
+      {agent.projects.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="section-label">프로젝트 {agent.projectCount}</span>
+            <button type="button" className="link-btn" style={{ marginLeft: 'auto', fontSize: 12.5, color: 'var(--accent)', textDecoration: 'none' }} onClick={() => navigate('/projects')}>
+              모두 보기
+            </button>
+          </span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {agent.projects.slice(0, 5).map((p) => (
+              <button key={p.id} type="button" className="insp-proj" onClick={() => navigate(`/projects/${p.id}`)}>
+                <span className={`proj-tile ${p.status === 'missing' ? 'missing' : p.isGit ? 'git' : ''}`} style={{ width: 30, height: 30, borderRadius: 9 }}>
+                  <Icon name={p.isGit ? 'branch' : 'folder'} size={15} stroke={1.9} />
+                </span>
+                <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', lineHeight: 1.3 }}>
+                  <b style={{ fontSize: 13 }}>{p.name}</b>
+                  <span className="mono dim" style={{ fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {p.displayPath}
+                  </span>
+                </span>
+                {p.status === 'missing' ? <span className="chip bad">경로 없음</span> : p.status === 'denied' ? <span className="chip warn">접근 불가</span> : p.watch ? <span className="chip ok"><Icon name="pulse" size={11} stroke={2.4} />점검</span> : null}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {agent.folders.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <span className="section-label">허용 폴더</span>

@@ -198,4 +198,50 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE agents ADD COLUMN folders TEXT NOT NULL DEFAULT '[]';
   `,
+  // v7: 에이전트가 관리하는 프로젝트(경로)와 그 활동, 화면에서 넣는 모듈 설정(비밀값은 SECRETS_KEY 로 암호화), 훅 값, 예약 건너뜀 기록
+  `
+  CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL CHECK (origin IN ('instruction', 'self', 'delegation', 'manual')),
+    origin_detail TEXT NOT NULL DEFAULT '',
+    origin_task_id TEXT,
+    watch INTEGER NOT NULL DEFAULT 0,
+    auto INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_activity_at INTEGER,
+    last_activity TEXT,
+    UNIQUE (agent_id, path)
+  );
+  CREATE TABLE project_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    ok INTEGER NOT NULL DEFAULT 1,
+    task_id TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_project_events ON project_events(project_id, id);
+  CREATE TABLE module_settings (
+    module_id TEXT NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    value TEXT,
+    cipher TEXT,
+    last4 TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (module_id, name)
+  );
+  CREATE TABLE hook_vars (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  ALTER TABLE schedules ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE schedules ADD COLUMN last_skipped_at INTEGER;
+  `,
 ];

@@ -1,5 +1,5 @@
 import { ValidationError } from '../errors.ts';
-import { matchCommandPattern, matchHost, matchPath, matchTarget } from './match.ts';
+import { matchCommandPattern, matchHost, matchPath, matchTarget, normalizeRelPath } from './match.ts';
 import { parseCommand } from './shell.ts';
 
 export type Mode = 'allow' | 'ask' | 'deny';
@@ -8,7 +8,10 @@ export interface PermissionRule {
   mode: Mode;
   /** allow 일 때 자동 허용 범위. 비어 있으면 전부 허용. 범위 밖은 '확인'으로 넘어갑니다. */
   scope: string[];
-  /** '항상 허용'으로 추가된 대상. 모드가 ask 여도 이 대상은 묻지 않습니다. */
+  /**
+   * '항상 허용'으로 추가된 대상. 모드가 ask 여도 이 대상은 묻지 않습니다.
+   * 승인 카드에서 추가한 값은 앞에 '=' 가 붙어 그 값과 글자 그대로 같을 때만 맞습니다 (안의 '*' 도 글자).
+   */
   always: string[];
 }
 
@@ -79,14 +82,49 @@ function matchesWholeCommand(pattern: string, command: string): boolean {
   return parsed.segments.every((seg) => matchCommandPattern(pattern, seg.words.join(' ')));
 }
 
+/** 승인 카드의 '항상 허용'으로 들어간 값: 앞에 '=' 를 붙여 사용자가 넣은 패턴과 구분합니다. */
+export const EXACT_PREFIX = '=';
+
+export function isExactEntry(entry: string): boolean {
+  return entry.startsWith(EXACT_PREFIX);
+}
+
+const normHost = (h: string): string => h.trim().toLowerCase().replace(/\.$/, '');
+
+/** 글자 그대로 같은지 (대상 종류마다 대소문자 · 경로 표기만 맞춤) */
+export function exactMatches(kind: ScopeKind, value: string, target: string): boolean {
+  switch (kind) {
+    case 'path':
+      return normalizeRelPath(value) === normalizeRelPath(target);
+    case 'host':
+      return normHost(value) !== '' && normHost(value) === normHost(target);
+    case 'target':
+    case 'manager':
+      return value.trim().toLowerCase() === target.trim().toLowerCase();
+    case 'command':
+      return value.trim() !== '' && value.trim() === target.trim();
+    case 'none':
+      return true;
+  }
+}
+
+/** 호스트 항목 하나가 맞는지: '=' 항목은 글자 그대로, 나머지는 패턴 */
+export function hostEntryMatches(entry: string, host: string): boolean {
+  return isExactEntry(entry) ? exactMatches('host', entry.slice(EXACT_PREFIX.length), host) : matchHost(entry, host);
+}
+
 function matchesAny(kind: ScopeKind, patterns: readonly string[], target: string): boolean {
+  // 그대로 항목: 대상 전체가 승인했던 값과 같을 때만 (명령이면 연결된 명령 전체가 같아야 함)
+  if (patterns.some((p) => isExactEntry(p) && exactMatches(kind, p.slice(EXACT_PREFIX.length), target))) return true;
+  const globs = patterns.filter((p) => !isExactEntry(p));
+  if (globs.length === 0) return false;
   if (kind === 'command') {
     // 여러 패턴이 있을 때는 구간마다 어느 하나와 맞으면 됩니다.
     const parsed = parseCommand(target);
     if (parsed.hasSubstitution || parsed.unbalanced || parsed.segments.length === 0) return false;
-    return parsed.segments.every((seg) => patterns.some((p) => matchCommandPattern(p, seg.words.join(' '))));
+    return parsed.segments.every((seg) => globs.some((p) => matchCommandPattern(p, seg.words.join(' '))));
   }
-  return patterns.some((p) => matches(kind, p, target));
+  return globs.some((p) => matches(kind, p, target));
 }
 
 /**
@@ -109,15 +147,21 @@ export function evaluatePermission(def: PermissionDef, rule: PermissionRule | un
   return { decision: 'ask', reason: `'${target}'은(는) '${def.label}' 허용 범위(${rule.scope.join(', ')}) 밖이라 확인이 필요합니다.` };
 }
 
-/** '항상 허용'을 누르면 대상이 always 목록에 들어갑니다. 이미 있으면 그대로 둡니다. */
+/**
+ * '항상 허용'을 누르면 대상이 그 값 그대로(앞에 '=')로 always 목록에 들어갑니다. 이미 있으면 그대로 둡니다.
+ * 승인한 명령 안의 '*' 가 와일드카드가 되어 더 넓게 허용되는 일을 막습니다 (예: rm *.log 를 허용했는데 rm -rf x.log 도 맞는 일).
+ */
 export function addAlways(rule: PermissionRule, target: string): PermissionRule {
-  if (rule.always.includes(target)) return rule;
-  return { ...rule, always: [...rule.always, target] };
+  const entry = `${EXACT_PREFIX}${target}`;
+  if (rule.always.includes(entry)) return rule;
+  return { ...rule, always: [...rule.always, entry] };
 }
 
 const MODES: readonly Mode[] = ['allow', 'ask', 'deny'];
 const MAX_SCOPE_ITEMS = 50;
 const MAX_PATTERN_LENGTH = 200;
+/** 승인으로 들어간 그대로 항목 (명령 전체가 들어감) */
+const MAX_EXACT_LENGTH = 4000;
 
 /** API로 들어온 권한 설정 검증. 잠긴 항목은 바꿀 수 없습니다. */
 export function validatePermissionSet(input: unknown, defs: readonly PermissionDef[]): PermissionSet {
@@ -159,8 +203,13 @@ function checkList(value: unknown, def: PermissionDef, field: 'scope' | 'always'
     if (typeof item !== 'string' || item.trim() === '') {
       throw new ValidationError('permission_pattern_empty', `'${def.label}'의 ${name}에 빈 값이나 문자열이 아닌 값이 있습니다.`, { key: def.key, field });
     }
-    if (item.length > MAX_PATTERN_LENGTH) {
-      throw new ValidationError('permission_pattern_long', `'${def.label}'의 ${name} 항목은 ${MAX_PATTERN_LENGTH}자까지입니다. '${item.slice(0, 20)}…'은(는) ${item.length}자입니다.`, { key: def.key, field });
+    const exact = isExactEntry(item);
+    if (exact && item.trim().length <= EXACT_PREFIX.length) {
+      throw new ValidationError('permission_exact_empty', `'${def.label}'의 ${name}에 '=' 뒤 값이 없는 항목이 있습니다.`, { key: def.key, field });
+    }
+    const limit = exact ? MAX_EXACT_LENGTH : MAX_PATTERN_LENGTH;
+    if (item.length > limit) {
+      throw new ValidationError('permission_pattern_long', `'${def.label}'의 ${name} 항목은 ${limit}자까지입니다. '${item.slice(0, 20)}…'은(는) ${item.length}자입니다.`, { key: def.key, field });
     }
     out.push(item.trim());
   }

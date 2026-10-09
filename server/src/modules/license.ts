@@ -104,16 +104,32 @@ function repoUrl(pkg: Record<string, unknown>): string | null {
   return null;
 }
 
+/** 라이선스 검사에서 훑는 node_modules 폴더 수 상한 */
+export const SCAN_MAX_DIRS = 20_000;
+
 /**
  * node_modules 를 훑어 설치된 패키지의 라이선스를 모읍니다 (중첩 node_modules 포함).
- * 같은 이름@버전은 한 번만 셉니다.
+ * 같은 이름@버전은 한 번만 셉니다. 폴더는 실제 경로로 한 번씩만 훑습니다:
+ * "a": "file:." 같은 의존성은 npm 이 자기 자신을 가리키는 링크를 만들어, 그대로 따라가면 경로가 끝없이(지수적으로) 늘어납니다.
  */
-export function scanNodeModules(root: string): DependencyLicense[] {
+export function scanNodeModules(root: string, maxDirs = SCAN_MAX_DIRS): DependencyLicense[] {
   const out: DependencyLicense[] = [];
   const seen = new Set<string>();
+  const visited = new Set<string>();
   const stack: string[] = [path.join(root, 'node_modules')];
   while (stack.length > 0) {
     const nm = stack.pop() as string;
+    let real: string;
+    try {
+      real = fs.realpathSync(nm);
+    } catch {
+      continue;
+    }
+    if (visited.has(real)) continue;
+    visited.add(real);
+    if (visited.size > maxDirs) {
+      throw new Error(`의존성 폴더(node_modules)가 ${maxDirs.toLocaleString()}개를 넘어 라이선스 검사를 멈췄습니다. 의존성을 줄이거나 package.json 을 확인하세요.`);
+    }
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(nm, { withFileTypes: true });

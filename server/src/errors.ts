@@ -108,6 +108,9 @@ function entityCode(entity: string): string {
     작업: 'task',
     예약: 'schedule',
     템플릿: 'template',
+    프로젝트: 'project',
+    '훅 값': 'hook_var',
+    '저장된 API 키': 'api_key',
   };
   return map[entity] ?? 'entity';
 }

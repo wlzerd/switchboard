@@ -77,14 +77,20 @@ function PermRow({ def, rule, error, onChange }: { def: PermissionDef; rule: Per
           <span className="muted" style={{ fontSize: 11.5 }}>
             항상 허용
           </span>
-          {rule.always.map((t) => (
-            <span key={t} className="chip mono ok">
-              {t}
-              <button type="button" aria-label={`${t} 항상 허용에서 빼기`} onClick={() => onChange({ ...rule, always: rule.always.filter((x) => x !== t) })}>
-                <Icon name="x" size={11} stroke={2.6} />
-              </button>
-            </span>
-          ))}
+          {rule.always.map((t) => {
+            // 승인 카드에서 넣은 값('=' 로 시작)은 글자 그대로만 맞고, 직접 넣은 값은 '*' 가 와일드카드인 패턴입니다.
+            const exact = t.startsWith('=');
+            const shown = exact ? t.slice(1) : t;
+            return (
+              <span key={t} className="chip mono ok always-chip" title={exact ? '이 값 그대로만 허용' : '패턴 (* 는 아무 문자열)'}>
+                <span className={`always-kind ${exact ? 'exact' : ''}`}>{exact ? '그대로' : '패턴'}</span>
+                <span className="always-text">{shown}</span>
+                <button type="button" aria-label={`${shown} 항상 허용에서 빼기`} onClick={() => onChange({ ...rule, always: rule.always.filter((x) => x !== t) })}>
+                  <Icon name="x" size={11} stroke={2.6} />
+                </button>
+              </span>
+            );
+          })}
         </div>
       ) : null}
       {error ? (

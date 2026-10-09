@@ -129,10 +129,50 @@ export class AnthropicService {
     }
   }
 
+  /** 키를 지우거나 바꿨을 때: 메모리에 남은 연결(복호화된 키를 품은 클라이언트)과 모델 목록을 비웁니다. */
+  forget(keyId: string): void {
+    this.clients.delete(keyId);
+    this.modelCache.delete(keyId);
+  }
+
+  /** 형식 → 인증 → 모델 목록 확인 (저장하지 않음) */
+  private async checkKey(apiKey: string): Promise<ModelSummary[]> {
+    const client = this.newClient(apiKey, this.config.modelsTimeoutMs, 0);
+    let models: ModelSummary[];
+    try {
+      models = await this.fetchModels(client, 'verify');
+    } catch (err) {
+      if (err instanceof KeyError) throw err;
+      const e = err as { code: string; message: string; status: number };
+      throw new KeyError(e.code, e.message, e.status, { stage: 'auth' });
+    }
+    if (models.length === 0) {
+      throw new KeyError('models_empty', '키는 유효하지만 이 키로 쓸 수 있는 모델이 없습니다(목록 0개). 조직의 모델 접근 설정을 확인하세요.', 409, { stage: 'models' });
+    }
+    return models;
+  }
+
+  /** 저장된 키의 값을 바꿉니다 (같은 이름 · 같은 에이전트 연결 유지). 새 키도 먼저 확인합니다. */
+  async replaceKey(keyId: string, rawKey: string): Promise<{ key: ApiKeyRow; count: number }> {
+    const row = this.store.getKey(keyId);
+    if (row.source === 'env') throw new KeyError('key_env_readonly', "'.env 기본 키'는 화면에서 바꿀 수 없습니다. .env 의 ANTHROPIC_API_KEY 를 바꾸고 서버를 다시 시작하세요.", 409);
+    const issue = checkKeyFormat(rawKey);
+    if (issue) throw new KeyError(issue.code, issue.message, 400, { stage: 'format' });
+    const apiKey = normalizeKey(rawKey);
+    const fp = hmac(this.config.sessionSecret, apiKey);
+    const dup = this.store.findKeyByFingerprint(fp);
+    if (dup && dup.id !== keyId) throw new KeyError('key_duplicate', `같은 키가 이미 '${dup.label}'(으)로 저장되어 있습니다.`, 409);
+    const models = await this.checkKey(apiKey);
+    const key = this.store.replaceKeySecret(keyId, encryptSecret(apiKey, this.config.secretsKey), last4(apiKey), fp);
+    this.forget(keyId);
+    this.modelCache.set(keyId, { at: Date.now(), models });
+    return { key, count: models.length };
+  }
+
   /**
    * 키 확인: 형식 → 인증 → 모델 목록. 성공하면 직접 입력한 키는 암호화해 저장하고(같은 키는 한 번만) 모델 목록을 돌려줍니다.
    */
-  async verify(input: { source: 'env' } | { source: 'manual'; key: string }): Promise<VerifyResult> {
+  async verify(input: { source: 'env' } | { source: 'manual'; key: string; label?: string }): Promise<VerifyResult> {
     let apiKey: string;
     if (input.source === 'env') {
       if (!this.config.anthropicApiKey) {
@@ -147,18 +187,7 @@ export class AnthropicService {
       apiKey = normalizeKey(input.key);
     }
 
-    const client = this.newClient(apiKey, this.config.modelsTimeoutMs, 0);
-    let models: ModelSummary[];
-    try {
-      models = await this.fetchModels(client, 'verify');
-    } catch (err) {
-      if (err instanceof KeyError) throw err;
-      const e = err as { code: string; message: string; status: number };
-      throw new KeyError(e.code, e.message, e.status, { stage: 'auth' });
-    }
-    if (models.length === 0) {
-      throw new KeyError('models_empty', '키는 유효하지만 이 키로 쓸 수 있는 모델이 없습니다(목록 0개). 조직의 모델 접근 설정을 확인하세요.', 409, { stage: 'models' });
-    }
+    const models = await this.checkKey(apiKey);
 
     let row: ApiKeyRow;
     if (input.source === 'env') {
@@ -167,7 +196,7 @@ export class AnthropicService {
       const fp = hmac(this.config.sessionSecret, apiKey);
       row =
         this.store.findKeyByFingerprint(fp) ??
-        this.store.insertKey({ label: `직접 입력 · …${last4(apiKey)}`, source: 'stored', cipher: encryptSecret(apiKey, this.config.secretsKey), last4: last4(apiKey) }, fp);
+        this.store.insertKey({ label: input.label?.trim().slice(0, 40) || `직접 입력 · …${last4(apiKey)}`, source: 'stored', cipher: encryptSecret(apiKey, this.config.secretsKey), last4: last4(apiKey) }, fp);
     }
     this.modelCache.set(row.id, { at: Date.now(), models });
     return { keyId: row.id, keyLabel: row.label, models, grouped: groupModels(models) };

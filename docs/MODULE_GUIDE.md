@@ -13,20 +13,21 @@
 
 - 스킬은 테스트를 통과하면 **바로** 나에게 연결된다. 모듈은 **사용자 승인 후** 설치·연결된다.
 - 같은 이름의 스킬을 다시 만들면 내가 만든 스킬일 때만 새 버전(패치 +1)으로 바뀐다. 다른 모듈이 쓰는 도구 이름은 쓸 수 없다.
-- 만들기 전에 사용자에게 무엇을 왜 만드는지 한 줄로 알리고, 만든 뒤에는 결과(도구 이름, 필요한 env, 승인 대기 여부)를 알린다.
+- 만들기 전에 사용자에게 무엇을 왜 만드는지 한 줄로 알리고, 만든 뒤에는 결과(도구 이름, 설정 화면에서 넣어야 할 값, 승인 대기 여부)를 알린다.
 
 ## 2. 공통 규칙 (어기면 설치되지 않음)
 
-1. **비밀값을 코드에 쓰지 않는다.** API 키·토큰·비밀번호는 `ctx.env.이름` 으로 받고 module.json 의 `env` 에 선언한다.
+1. **비밀값을 코드에 쓰지 않는다.** API 키·토큰·비밀번호는 `ctx.env.이름` 으로 받고 module.json 의 `env` 에 `"secret": true` 로 선언한다.
+   사용자가 설정 화면에서 넣은 값은 암호화되어 저장되고, 모듈이 켜질 때 `ctx.env` 로 들어온다.
    코드에 `sk-ant-…`, `ghp_…`, `xoxb-…` 같은 값이 있으면 기본 금지 조항(하드코딩된 비밀값 차단)이 설치를 막는다.
 2. **외부 접속은 `ctx.fetch` 로만 한다.** 접속할 도메인을 `permissions.net` (모듈) 또는 `net` (스킬)에 적는다.
    목록에 없는 도메인은 실행 중에 막힌다. 스킬에는 `*`(모든 도메인)를 쓸 수 없다.
 3. **`eval`, `new Function` 금지.** `child_process` 는 모듈에서 `permissions.childProcess: true` 로 선언하고 승인받았을 때만.
 4. **외부 패키지를 쓰지 않는다.** 에이전트가 만든 모듈·스킬은 Node 내장 모듈(`node:crypto`, `node:path` 등)과 `ctx.fetch` 만 쓴다. `package.json` 에 의존성을 넣으면 점검에서 막힌다.
 5. **파일은 `ctx.dataDir` 안에만 쓴다.** 모듈 프로세스는 자기 폴더와 `ctx.dataDir` 만 읽을 수 있고, 쓰기는 `ctx.dataDir` 만 된다.
-6. **`process.env` 대신 `ctx.env`.** 모듈 프로세스에는 module.json 에 선언한 환경 변수만 전달된다 (서버의 Anthropic 키 등은 없다).
+6. **`process.env` 대신 `ctx.env`.** 모듈 프로세스에는 module.json 에 선언한 설정만 전달된다 (서버의 Anthropic 키 등은 없다).
 7. **재귀 함수를 쓰지 않는다.** 트리·JSON 순회도 스택/큐를 쓴 반복문으로 작성한다 (스택 넘침 방지).
-8. **오류는 이유가 보이게 던진다.** `throw new Error('WEATHER_KEY 가 비어 있습니다. .env 에 추가하세요.')` 처럼 무엇이 왜 실패했고 어떻게 고치는지 쓴다. 뭉뚱그린 "오류가 발생했습니다" 는 쓰지 않는다.
+8. **오류는 이유가 보이게 던진다.** `throw new Error('WEATHER_KEY 가 비어 있습니다. 설정 화면의 이 모듈 항목에서 넣으세요.')` 처럼 무엇이 왜 실패했고 어떻게 고치는지 쓴다. 뭉뚱그린 "오류가 발생했습니다" 는 쓰지 않는다.
 9. **호출 하나는 `MODULE_CALL_TIMEOUT_MS` (기본 30초) 안에 끝나야 한다.** 오래 걸리는 일은 나눠서 부르거나 모듈의 주기 작업으로 돌린다.
 10. 결과는 문자열이나 JSON 으로 직렬화 가능한 값으로 돌려준다. 결과가 길면 필요한 부분만 요약해 돌려준다 (내 컨텍스트를 아낀다).
 
@@ -102,7 +103,7 @@ export default async function run(input, ctx) {
   "icon": "doc",
   "channel": null,
   "env": [
-    { "name": "NOTION_TOKEN", "required": true, "description": "노션 통합 토큰 (secret_...)" }
+    { "name": "NOTION_TOKEN", "label": "노션 토큰", "secret": true, "required": true, "description": "노션 통합 토큰 (secret_...)" }
   ],
   "permissions": { "net": ["api.notion.com"], "fsWrite": false, "childProcess": false },
   "tools": [
@@ -130,7 +131,7 @@ export default async function run(input, ctx) {
 | `icon` | `chat` `plane` `git` `rss` `doc` `link` `cube` `globe` `clock` `bolt` `mail` `screen` 중 하나 |
 | `channel` | 메시지를 주고받는 모듈이면 `{ "label": "표시 이름" }`, 받기만 하는 모듈(메일 감시 등)은 `{ "label": "표시 이름", "send": false }`, 아니면 `null` |
 | `computer` | 화면 제어 모듈만 `{ "label": "표시 이름" }`. 에이전트는 만들 수 없음 (아래) |
-| `env` | 최대 20개. 이름은 대문자로 시작, 대문자·숫자·밑줄. 값은 사용자가 `.env` 에 넣는다 |
+| `env` | 최대 20개. 이름은 대문자로 시작, 대문자·숫자·밑줄. `label` 은 설정 화면에 보일 이름(40자까지), `required` 는 기본 `true`. 토큰·비밀번호는 `"secret": true` (빼면 이름에 TOKEN · PASSWORD · API_KEY 등이 있을 때 비밀값으로 본다). `url` 에는 값을 만드는 페이지(토큰 발급 페이지 등, https 만)를 적으면 설정 화면과 "설정 필요" 카드에 링크로 보인다. 값은 사용자가 설정 화면에서 넣는다 |
 | `tools[].name` | 다른 모듈·내장 도구와 겹치지 않게 모듈 이름을 앞에 붙인다 (`notion_query`) |
 | `tools[].description` | 내가 이 설명만 보고 도구를 고른다. 언제 쓰는지까지 쓴다 |
 
@@ -141,7 +142,7 @@ export default async function run(input, ctx) {
 export default {
   // 모듈이 켜질 때 한 번. 필요한 env 를 여기서 확인하고, 없으면 이유를 담아 던진다.
   async activate(ctx) {
-    if (!ctx.env.NOTION_TOKEN) throw new Error('NOTION_TOKEN 이 비어 있습니다. .env 에 노션 통합 토큰을 넣고 모듈 화면에서 ".env 다시 읽기"를 누르세요.');
+    if (!ctx.env.NOTION_TOKEN) throw new Error('NOTION_TOKEN 이 비어 있습니다. 설정 화면의 이 모듈 항목에 노션 통합 토큰을 넣으세요.');
   },
 
   // 꺼질 때 (타이머·연결 정리)
@@ -171,11 +172,12 @@ export default {
 
 | 이름 | 설명 |
 |---|---|
-| `ctx.env` | module.json 에 선언한 환경 변수만 들어 있는 객체 |
+| `ctx.env` | module.json 에 선언한 설정만 들어 있는 객체 (설정 화면에 넣은 값, 없으면 서버 `.env` 의 같은 이름) |
 | `ctx.fetch` | 허용 도메인만 접속되는 `fetch` |
 | `ctx.dataDir` | 이 모듈 전용 쓰기 폴더 (상태 파일, 캐시) |
 | `ctx.log.info / warn / error` | 모듈 화면의 "로그"에 남는다 |
 | `ctx.emit(message)` | 채널 모듈: 받은 메시지를 연결된 에이전트에게 넘긴다. 감시 결과는 `quiet: true` 로 넘긴다 (아래) |
+| `ctx.status(text)` | 지금 상태의 문제(토큰 만료, 볼 수 없는 대상 등)를 모듈 화면에 띄운다. 빈 문자열이면 지운다. 프로세스를 끝내지 않아도 된다 |
 | `ctx.meta` | 도구 호출 때만: `{ agentId, agentName, taskId }` |
 | `ctx.id` | 모듈 id |
 
@@ -241,11 +243,11 @@ ctx.emit({
 
 ### 설치 흐름
 
-1. `module_create` → 점검: module.json 검증, 진입점 존재, 정적 검사, 라이선스, 외부 패키지, 요청 권한, 필요한 env, 도구 이름 충돌.
+1. `module_create` → 점검: module.json 검증, 진입점 존재, 정적 검사, 라이선스, 외부 패키지, 요청 권한, 필요한 설정, 도구 이름 충돌.
 2. 점검 오류가 있으면 파일을 지우고 항목별 이유를 돌려준다 → 고쳐서 다시 만든다.
 3. 설치 전 훅(before_install)과 내 `module.install` 권한에 따라 바로 설치되거나, 사용자 **승인 대기**가 된다.
-   승인을 기다리는 동안 사용자에게 무엇을 만들었고 왜 필요한지, 넣어야 할 env 가 무엇인지 알린다.
-4. 승인되면 설치·연결된다. 필요한 env 가 `.env` 에 없으면 모듈은 "시작 실패" 상태로 남는다 — 사용자에게 어떤 이름으로 무엇을 넣어야 하는지 알려 준다.
+   승인을 기다리는 동안 사용자에게 무엇을 만들었고 왜 필요한지, 설정 화면에서 넣어야 할 값이 무엇인지 알린다.
+4. 승인되면 설치·연결된다. 필요한 설정이 비어 있으면 모듈은 "시작 실패" 상태로 남는다 — 사용자에게 설정 화면의 어느 항목(`label`)에 무엇을 넣어야 하는지 알려 준다. 값을 저장하면 모듈이 다시 시작된다.
 
 ## 5. 고치기 · 지우기
 

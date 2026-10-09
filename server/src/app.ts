@@ -14,7 +14,10 @@ import { HookEngine, type FileHook } from './hooks/engine.ts';
 import { loadFileHooks, type FileHookError } from './hooks/files.ts';
 import type { Logger } from './log.ts';
 import { ModuleRegistry } from './modules/registry.ts';
+import { ProjectService } from './projects/service.ts';
 import { SchedulerService } from './scheduler/service.ts';
+import { SettingsService } from './settings/service.ts';
+import os from 'node:os';
 
 export interface App {
   config: Config;
@@ -29,6 +32,8 @@ export interface App {
   guardState: GuardState;
   scheduler: SchedulerService;
   manager: AgentManager;
+  settings: SettingsService;
+  projects: ProjectService;
   presets: Map<string, Preset>;
   fileHooks: { hooks: FileHook[]; errors: FileHookError[] };
   reloadFileHooks: () => Promise<void>;
@@ -44,12 +49,17 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
 
   const db = new Db(path.join(config.dataDir, 'switchboard.db'));
   const store = new Store(db);
+  // 활동 기록은 이만큼만 남깁니다 (지금 넘치는 것도 바로 정리).
+  store.configureActivity(config.activityKeep);
+  const settings = new SettingsService({ config, store, env: () => process.env });
   const bus = new EventBus(store);
   const presets = loadPresets(config.rootDir);
   const anthropic = new AnthropicService(config, store, log.child('anthropic'));
   anthropic.syncEnvKey();
 
   const registry = new ModuleRegistry(config, store, bus, log.child('modules'));
+  // 모듈 설정: 화면에서 넣은 값(DB, 비밀값은 풀어서) → 없으면 .env
+  registry.settings = (manifest) => settings.resolveModule(manifest);
   const approvals = new ApprovalService(config, store, bus, log.child('approvals'));
   approvals.expireLeftovers();
   const failed = store.failUnfinishedTasks('서버가 다시 시작되어 이전 실행의 작업을 중단했습니다.');
@@ -67,10 +77,8 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
         const v = process.env[k];
         if (v && v.trim()) values.push(v.trim());
       }
-      for (const m of store.listModules()) for (const e of m.manifest.env) {
-        const v = process.env[e.name];
-        if (v && v.trim()) values.push(v.trim());
-      }
+      // 모듈 비밀값: 설정 화면에 저장한 값(풀어서)과 .env 의 비밀 항목. 서버 주소 같은 일반 설정값은 넣지 않습니다.
+      values.push(...settings.secretValues(store.listModules()));
       return values;
     },
     selfHosts,
@@ -94,11 +102,24 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
     guardState,
     rules: () => store.listHooks(),
     fileHooks: () => app.fileHooks.hooks,
-    runtime: { env: (name) => process.env[name], timeZone: process.env['TZ'] || 'UTC' },
+    // 훅의 $env:이름 은 설정 화면의 훅 값(DB)을 먼저, 없으면 .env 를 봅니다.
+    runtime: { env: (name) => settings.hookVar(name), timeZone: process.env['TZ'] || 'UTC' },
   });
 
   const scheduler = new SchedulerService(store, bus, log.child('scheduler'));
-  const manager = new AgentManager({ config, store, bus, log: log.child('agents'), anthropic, registry, hooks, approvals, guardState, scheduler, presets, secretDirs: guardLists.secretDirectories });
+  const projects = new ProjectService({
+    config,
+    store,
+    bus,
+    home: os.homedir(),
+    realpath: (p) => fs.realpathSync.native(p),
+    workspaceOf: (agentId) => {
+      const dir = path.join(config.dataDir, 'workspaces', agentId);
+      fs.mkdirSync(dir, { recursive: true });
+      return fs.realpathSync.native(dir);
+    },
+  });
+  const manager = new AgentManager({ config, store, bus, log: log.child('agents'), anthropic, registry, hooks, approvals, guardState, scheduler, presets, secretDirs: guardLists.secretDirectories, projects, settings });
 
   registry.init();
   manager.init();
@@ -116,6 +137,8 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
     guardState,
     scheduler,
     manager,
+    settings,
+    projects,
     presets,
     get fileHooks() {
       return app.fileHooks;

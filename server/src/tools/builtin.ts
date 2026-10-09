@@ -6,7 +6,7 @@ import type { Config } from '../config/env.ts';
 import type { AgentRow, Store } from '../db/store.ts';
 import { ValidationError } from '../errors.ts';
 import { displayPath, isInsidePath, resolveToolPath } from '../permissions/folders.ts';
-import { matchHost } from '../permissions/match.ts';
+import { hostEntryMatches, isExactEntry } from '../permissions/policy.ts';
 import { packageManagerOf, parseCommand } from '../permissions/shell.ts';
 import type { ModuleRegistry } from '../modules/registry.ts';
 import type { SourceFile } from '../modules/static-check.ts';
@@ -43,6 +43,12 @@ export interface HeartbeatToolInput {
   activeHours?: string;
 }
 
+export interface ProjectApi {
+  /** 등록하거나(없으면) 고칩니다(있으면). abs 는 실제 경로로 푼 값. 결과 문구를 돌려줍니다. */
+  track(env: ToolEnv, abs: string, input: { name?: string; note?: string; watch?: boolean }): string;
+  untrack(env: ToolEnv, abs: string): string;
+}
+
 export interface ToolServices {
   config: Config;
   store: Store;
@@ -53,6 +59,7 @@ export interface ToolServices {
   schedules: ScheduleApi;
   delegate: (agent: AgentRow, env: ToolEnv, input: DelegateInput) => Promise<string>;
   heartbeat: (agent: AgentRow, env: ToolEnv, input: HeartbeatToolInput) => string;
+  projects: ProjectApi;
 }
 
 const realpathNative = (p: string): string => fs.realpathSync.native(p);
@@ -187,6 +194,9 @@ const fsList = (): BuiltinTool => ({
 
 /* ───────── 셸 ───────── */
 
+/** 셸이 끝난 뒤 출력 파이프가 닫히기를 기다리는 시간 (백그라운드 프로세스가 붙잡고 있으면 그 뒤에 끊음) */
+export const PIPE_GRACE_MS = 1000;
+
 const shellExec = (s: ToolServices): BuiltinTool => ({
   name: 'shell_exec',
   title: '셸 명령',
@@ -244,11 +254,11 @@ const shellExec = (s: ToolServices): BuiltinTool => ({
       let size = 0;
       let cut = false;
       const take = (chunk: Buffer, into: 'out' | 'err'): void => {
-        if (size >= max) {
-          cut = true;
-          return;
-        }
-        const piece = chunk.subarray(0, max - size).toString('utf8');
+        const room = max - size;
+        // 마지막 조각이 한도를 넘어도 잘렸다고 알립니다.
+        if (chunk.length > room) cut = true;
+        if (room <= 0) return;
+        const piece = chunk.subarray(0, room).toString('utf8');
         size += chunk.length;
         if (into === 'out') out += piece;
         else err += piece;
@@ -263,27 +273,46 @@ const shellExec = (s: ToolServices): BuiltinTool => ({
         }
       };
       let timedOut = false;
+      let settled = false;
+      let grace: NodeJS.Timeout | null = null;
       const timer = setTimeout(() => {
         timedOut = true;
         killGroup();
       }, limit);
       const onAbort = (): void => killGroup();
       env.signal.addEventListener('abort', onAbort, { once: true });
-      child.on('error', (e) => {
+      const finish = (code: number | null, signal: NodeJS.Signals | null, held: boolean): void => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
-        env.signal.removeEventListener('abort', onAbort);
-        reject(new ValidationError('shell_error', e.message.includes('ENOENT') ? '/bin/sh 를 찾지 못했습니다. 이 서버는 Linux·macOS 에서 셸 명령을 지원합니다.' : `명령 실행 오류: ${e.message}`));
-      });
-      child.on('close', (code, signal) => {
-        clearTimeout(timer);
+        if (grace) clearTimeout(grace);
         env.signal.removeEventListener('abort', onAbort);
         const head = timedOut
           ? `${Math.round(limit / 1000)}초 제한을 넘어 강제로 멈췄습니다.`
           : env.signal.aborted
             ? '작업이 취소되어 명령을 멈췄습니다.'
             : `종료 코드 ${code ?? `(신호 ${signal})`}`;
-        resolve(`${head}${cut ? ` · 출력이 ${max}바이트를 넘어 잘림` : ''}\n--- stdout ---\n${out.trimEnd()}\n--- stderr ---\n${err.trimEnd()}`);
+        const heldNote = held ? ` · 백그라운드 프로세스가 출력을 붙잡고 있어 ${PIPE_GRACE_MS / 1000}초 뒤 끊었습니다 (계속 띄워 두려면 출력을 파일로 보내세요: 명령 > app.log 2>&1 &)` : '';
+        resolve(`${head}${heldNote}${cut ? ` · 출력이 ${max}바이트를 넘어 잘림` : ''}\n--- stdout ---\n${out.trimEnd()}\n--- stderr ---\n${err.trimEnd()}`);
+      };
+      child.on('error', (e) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (grace) clearTimeout(grace);
+        env.signal.removeEventListener('abort', onAbort);
+        reject(new ValidationError('shell_error', e.message.includes('ENOENT') ? '/bin/sh 를 찾지 못했습니다. 이 서버는 Linux·macOS 에서 셸 명령을 지원합니다.' : `명령 실행 오류: ${e.message}`));
       });
+      child.on('exit', (code, signal) => {
+        // 셸은 끝났는데 새 세션으로 빠져나간 백그라운드 프로세스(setsid 등)가 출력 파이프를 쥐고 있으면 'close' 가 오지 않습니다.
+        // 프로세스 그룹을 죽여도 닿지 않으므로, 잠깐 기다린 뒤 파이프를 끊고 결과를 돌려줍니다 (작업이 영원히 멈추지 않게).
+        grace = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(code, signal, true);
+        }, PIPE_GRACE_MS);
+      });
+      child.on('close', (code, signal) => finish(code, signal, false));
     });
   },
 });
@@ -320,7 +349,8 @@ const httpRequest = (s: ToolServices): BuiltinTool => ({
   },
   async run(input, env) {
     const rule = env.agent.permissions['net.fetch'];
-    const explicit = (host: string): boolean => [...(rule?.scope ?? []), ...(rule?.always ?? [])].some((p) => !p.includes('*') && matchHost(p, host));
+    // 내부망 주소는 와일드카드가 아닌 항목(그대로 항목 포함)으로 직접 적은 호스트만 허용합니다.
+    const explicit = (host: string): boolean => [...(rule?.scope ?? []), ...(rule?.always ?? [])].some((p) => (isExactEntry(p) || !p.includes('*')) && hostEntryMatches(p, host));
     const headers: Record<string, string> = {};
     const rawHeaders = input['headers'];
     if (rawHeaders && typeof rawHeaders === 'object') {
@@ -340,7 +370,7 @@ const httpRequest = (s: ToolServices): BuiltinTool => ({
         hostAllowed: (host) => {
           if (!rule || rule.mode === 'deny') return false;
           if (rule.mode === 'allow' && rule.scope.length === 0) return true;
-          return [...rule.scope, ...rule.always].some((p) => matchHost(p, host));
+          return [...rule.scope, ...rule.always].some((p) => hostEntryMatches(p, host));
         },
         privateAllowed: explicit,
       });
@@ -464,9 +494,9 @@ const delegateTask = (s: ToolServices): BuiltinTool => ({
   name: 'delegate_task',
   title: '다른 에이전트에게 맡기기',
   description:
-    '다른 에이전트에게 일을 맡깁니다. 권한이 없어 직접 할 수 없는 일이나 다른 에이전트의 역할에 맞는 일을 넘길 때 씁니다. ' +
-    'to 는 시스템 프롬프트의 위임 목록에 있는 에이전트 이름, task 는 그 에이전트가 이 대화를 몰라도 이해할 수 있게 필요한 정보를 모두 담아 씁니다. ' +
-    '결과는 끝나는 대로 이 대화로 돌아옵니다. 한 작업에서는 한 에이전트에게만 맡기고 결과를 기다리세요.',
+    '다른 에이전트에게 일을 맡깁니다. 그 에이전트의 역할에 맞는 일이거나, 권한이 없어 직접 할 수 없는 일을 넘길 때 씁니다. ' +
+    'to 는 시스템 프롬프트의 위임 목록에 있는 에이전트 이름, task 는 그 에이전트가 이 대화를 몰라도 이해할 수 있게 필요한 정보(링크 · 번호 · 재현 방법 등)를 모두 담아 씁니다. ' +
+    '결과는 끝나는 대로 이 대화로 돌아옵니다. 서로 다른 일이 여러 건이면 건마다 따로 맡기고, 같은 일은 결과가 오기 전에 다시 맡기지 마세요.',
   input_schema: {
     type: 'object',
     properties: {
@@ -519,6 +549,59 @@ const heartbeatSet = (s: ToolServices): BuiltinTool => ({
   },
 });
 
+/* ───────── 관리 중인 프로젝트 ───────── */
+
+const projectTrack = (s: ToolServices): BuiltinTool => ({
+  name: 'project_track',
+  title: '프로젝트 등록',
+  description:
+    '관리할 프로젝트(폴더 · 저장소)를 등록하거나, 이미 등록한 프로젝트의 이름 · 메모 · 하트비트 점검 여부를 고칩니다. ' +
+    '사용자가 맡긴 프로젝트를 새로 만들거나 가져왔을 때(git clone 등), 또는 계속 관리하기로 한 폴더가 생겼을 때 씁니다. ' +
+    'note 에는 무엇을 하는 곳이고 무엇을 관리하는지 적습니다. 사용자는 프로젝트 화면에서 어디서 무엇을 하는지 봅니다.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', minLength: 1, maxLength: 500, description: '작업 폴더 기준 상대 경로, 또는 허용 폴더 안의 절대 경로 (폴더)' },
+      name: { type: 'string', maxLength: 60, description: '보여 줄 이름 (비우면 폴더 이름)' },
+      note: { type: 'string', maxLength: 300, description: '무엇을 하는 프로젝트인지 · 무엇을 관리하는지' },
+      watch: { type: 'boolean', description: 'true 면 하트비트 점검 때 이 프로젝트도 확인합니다' },
+    },
+    required: ['path'],
+    additionalProperties: false,
+  },
+  describe(input, env): Described {
+    const abs = toolPath(env, str(input, 'path'));
+    return { permission: 'fs.read', target: rel(env, abs), paths: [abs], summary: rel(env, abs) };
+  },
+  async run(input, env) {
+    const abs = toolPath(env, str(input, 'path'));
+    return s.projects.track(env, abs, {
+      ...(typeof input['name'] === 'string' ? { name: input['name'] } : {}),
+      ...(typeof input['note'] === 'string' ? { note: input['note'] } : {}),
+      ...(typeof input['watch'] === 'boolean' ? { watch: input['watch'] } : {}),
+    });
+  },
+});
+
+const projectUntrack = (s: ToolServices): BuiltinTool => ({
+  name: 'project_untrack',
+  title: '프로젝트 빼기',
+  description: '더 관리하지 않는 프로젝트를 목록에서 뺍니다. 폴더와 파일은 지우지 않습니다.',
+  input_schema: {
+    type: 'object',
+    properties: { path: { type: 'string', minLength: 1, maxLength: 500, description: '등록할 때 쓴 경로' } },
+    required: ['path'],
+    additionalProperties: false,
+  },
+  describe(input, env): Described {
+    const abs = toolPath(env, str(input, 'path'));
+    return { permission: 'fs.read', target: rel(env, abs), paths: [abs], summary: rel(env, abs) };
+  },
+  async run(input, env) {
+    return s.projects.untrack(env, toolPath(env, str(input, 'path')));
+  },
+});
+
 /* ───────── 예약 ───────── */
 
 const scheduleCreate = (s: ToolServices): BuiltinTool => ({
@@ -566,7 +649,7 @@ const scheduleCancel = (s: ToolServices): BuiltinTool => ({
 });
 
 export function builtinTools(s: ToolServices): BuiltinTool[] {
-  return [fsRead(s), fsWrite(), fsList(), shellExec(s), httpRequest(s), sendMessage(s), skillCreate(s), moduleCreate(s), scheduleCreate(s), scheduleList(s), scheduleCancel(s), delegateTask(s), heartbeatSet(s)];
+  return [fsRead(s), fsWrite(), fsList(), shellExec(s), httpRequest(s), sendMessage(s), skillCreate(s), moduleCreate(s), scheduleCreate(s), scheduleList(s), scheduleCancel(s), delegateTask(s), heartbeatSet(s), projectTrack(s), projectUntrack(s)];
 }
 
 /** 이 도구들을 쓰려면 어떤 권한이 하나라도 허용/확인이어야 하는지 (모두 차단이면 목록에서 뺍니다). */
@@ -585,4 +668,7 @@ export const TOOL_PERMISSION: Record<string, string[]> = {
   // 위임은 권한 항목이 아니라 에이전트의 위임 설정(보내기 허용)으로 켜고 끕니다.
   delegate_task: [],
   heartbeat_set: ['heartbeat.manage'],
+  // 프로젝트 등록은 그 폴더를 읽을 수 있어야 합니다 (작업 폴더 · 허용 폴더 밖은 기본 금지 조항이 막음).
+  project_track: ['fs.read'],
+  project_untrack: ['fs.read'],
 };
