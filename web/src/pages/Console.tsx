@@ -6,7 +6,7 @@ import { Avatar, Modal, ModuleIcon, Seg, StatusLine, Steps, Switch } from '../co
 import { EFFORT_LABEL } from '../lib/agent';
 import { api, errorText } from '../lib/api';
 import { MODE_LABEL } from '../lib/folders';
-import { delegationChips, heartbeatFormOf, heartbeatFormProblem, heartbeatPayload, intervalChoices, intervalLabel, sameHeartbeat, type HeartbeatForm } from '../lib/autonomy';
+import { delegationChips, intervalLabel } from '../lib/autonomy';
 import { clock, relTime } from '../lib/format';
 import { navigate } from '../lib/router';
 import { onServerEvent, refreshOverview, toast, useApp } from '../lib/store';
@@ -831,22 +831,10 @@ function Schedules({ agentId }: { agentId: string }) {
 }
 
 /** 하트비트 · 보고 받을 곳. 조용한 작업(하트비트 · 새 메일 같은 자동 알림)의 보고가 이리로 갑니다. */
-function HeartbeatPanel({ agent }: { agent: AgentView }) {
-  const meta = useApp((s) => s.meta) as Meta;
-  const modules = useApp((s) => s.overview?.modules) ?? [];
-  const limits = meta.heartbeat;
-  const saved = useMemo(() => heartbeatFormOf(agent, limits), [agent, limits]);
-  const [form, setForm] = useState<HeartbeatForm>(saved);
-  const [busy, setBusy] = useState<'save' | 'run' | null>(null);
+/** 하트비트 상태와 '지금 확인'. 켜고 끄기 · 간격 · 조건은 에이전트 설정 창에서 정합니다. */
+function HeartbeatStatus({ agent }: { agent: AgentView }) {
+  const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // 에이전트가 heartbeat_set 으로 바꾸는 등 서버 값이 바뀌면, 고치던 중이 아닐 때만 화면 값을 맞춥니다.
-  const shown = useRef(saved);
-  useEffect(() => {
-    setForm((f) => (sameHeartbeat(f, shown.current) ? saved : f));
-    shown.current = saved;
-  }, [saved]);
 
   useEffect(() => {
     if (!checking) return undefined;
@@ -861,55 +849,21 @@ function HeartbeatPanel({ agent }: { agent: AgentView }) {
     };
   }, [checking, agent.id]);
 
-  const dirty = !sameHeartbeat(form, saved);
-  const senders = modules.filter((m) => m.canSend);
-  const choices = intervalChoices(limits, form.everyMinutes);
-  const set = (patch: Partial<HeartbeatForm>): void => {
-    setForm((f) => ({ ...f, ...patch }));
-    setError(null);
-  };
-
-  const save = async (next: HeartbeatForm): Promise<boolean> => {
-    const problem = heartbeatFormProblem(next, limits, modules);
-    if (problem) {
-      setError(problem);
-      return false;
-    }
+  const run = async (): Promise<void> => {
+    setBusy(true);
     try {
-      await api(`/api/agents/${agent.id}/heartbeat`, { method: 'PUT', body: heartbeatPayload(next) });
-      shown.current = next;
-      setForm(next);
-      refreshOverview(0);
-      return true;
-    } catch (err) {
-      setError(errorText(err));
-      return false;
-    }
-  };
-
-  const onSave = async (next: HeartbeatForm): Promise<void> => {
-    setBusy('save');
-    const was = saved.enabled;
-    if (await save(next)) toast(next.enabled && !was ? `하트비트 켬 · ${intervalLabel(next.everyMinutes)}마다` : !next.enabled && was ? '하트비트 끔' : '하트비트 설정을 저장했습니다', 'ok');
-    setBusy(null);
-  };
-
-  const onRun = async (): Promise<void> => {
-    setBusy('run');
-    try {
-      if (dirty && !(await save(form))) return;
       await api(`/api/agents/${agent.id}/heartbeat/run`, { body: {} });
       setChecking(true);
     } catch (err) {
-      setError(errorText(err));
+      toast(errorText(err), 'error');
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
 
   const hb = agent.heartbeat;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span className="section-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           {hb?.enabled ? (
@@ -922,76 +876,21 @@ function HeartbeatPanel({ agent }: { agent: AgentView }) {
         <span className="muted" style={{ fontSize: 11.5 }}>
           {hb?.lastAt ? `마지막 ${relTime(hb.lastAt)}` : ''}
         </span>
-        <span style={{ marginLeft: 'auto' }}>
-          <Switch checked={form.enabled} label="하트비트 켜기" disabled={busy !== null} onChange={(enabled) => void onSave({ ...form, enabled })} />
-        </span>
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-        <select className="select" style={{ height: 34, fontSize: 13, flex: '1 1 110px' }} aria-label="확인 간격" value={form.everyMinutes} onChange={(e) => set({ everyMinutes: Number(e.target.value) })}>
-          {choices.map((m) => (
-            <option key={m} value={m}>
-              {intervalLabel(m)}마다
-            </option>
-          ))}
-        </select>
-        <Seg
-          value={form.allDay ? 'all' : 'hours'}
-          options={[
-            { value: 'all', label: '하루 종일' },
-            { value: 'hours', label: '시간 지정' },
-          ]}
-          onChange={(v) => set({ allDay: v === 'all' })}
-          label="활동 시간"
-        />
-      </div>
-      {!form.allDay ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, animation: 'rise .25s ease backwards' }}>
-          <input className="input mono" type="time" style={{ height: 34, fontSize: 13, flex: 1, minWidth: 0 }} aria-label="활동 시작" value={form.start} onChange={(e) => set({ start: e.target.value })} />
-          <span className="muted">–</span>
-          <input className="input mono" type="time" style={{ height: 34, fontSize: 13, flex: 1, minWidth: 0 }} aria-label="활동 끝" value={form.end} onChange={(e) => set({ end: e.target.value })} />
+      {hb?.enabled ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+          <span className="chips">
+            <span className="chip">{intervalLabel(hb.everyMinutes)}마다</span>
+            <span className="chip mono">{hb.activeHours ?? '하루 종일'}</span>
+          </span>
+          <button type="button" className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy || checking} onClick={() => void run()}>
+            {busy || checking ? <span className="spinner" style={{ width: 12, height: 12 }} /> : <Icon name="pulse" size={13} stroke={2.2} />}
+            {checking ? '확인 중' : '지금 확인'}
+          </button>
         </div>
-      ) : null}
-      <textarea
-        className="textarea"
-        rows={3}
-        style={{ fontSize: 13 }}
-        aria-label="점검 · 알릴 조건"
-        placeholder="점검 · 알릴 조건"
-        maxLength={limits.checklistMax + 200}
-        value={form.checklist}
-        onChange={(e) => set({ checklist: e.target.value })}
-      />
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-        <span className="section-label" style={{ flex: 'none' }}>
-          보고
-        </span>
-        <select className="select" style={{ height: 34, fontSize: 13, flex: '1 1 100px', minWidth: 0 }} aria-label="보고 받을 채널" value={form.reportModule} onChange={(e) => set({ reportModule: e.target.value })}>
-          <option value="">화면에만</option>
-          {senders.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-            </option>
-          ))}
-        </select>
-        {form.reportModule ? (
-          <input className="input mono" style={{ height: 34, fontSize: 13, flex: '1 1 120px', minWidth: 0 }} aria-label="보고 받을 대상" placeholder="#채널 또는 대화 id" value={form.reportTarget} onChange={(e) => set({ reportTarget: e.target.value })} />
-        ) : null}
-      </div>
-      {error ? (
-        <span className="err" role="alert">
-          {error}
-        </span>
-      ) : null}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        <button type="button" className="btn primary sm" disabled={!dirty || busy !== null} onClick={() => void onSave(form)}>
-          {busy === 'save' ? <span className="spinner" style={{ width: 12, height: 12, borderTopColor: 'var(--onAccent)' }} /> : null}
-          저장
-        </button>
-        <button type="button" className="btn sm" disabled={busy !== null || checking || form.checklist.trim() === ''} onClick={() => void onRun()}>
-          {busy === 'run' || checking ? <span className="spinner" style={{ width: 12, height: 12 }} /> : <Icon name="pulse" size={13} stroke={2.2} />}
-          {checking ? '확인 중' : '지금 확인'}
-        </button>
-      </div>
+      ) : (
+        <span className="muted">꺼짐</span>
+      )}
     </div>
   );
 }
@@ -1120,7 +1019,7 @@ function AgentPanel({ agent }: { agent: AgentView }) {
           </div>
         </div>
       ) : null}
-      <HeartbeatPanel agent={agent} />
+      <HeartbeatStatus agent={agent} />
       <Schedules agentId={agent.id} />
       <button type="button" className="btn danger sm" style={{ alignSelf: 'flex-start' }} onClick={() => setConfirmDelete(true)}>
         <Icon name="trash" size={14} />

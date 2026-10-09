@@ -148,6 +148,18 @@ export function heartbeatPayload(f: HeartbeatForm): { heartbeat: HeartbeatSettin
   };
 }
 
+/**
+ * 모듈 자동 알림(새 메일 · 새 이슈 등)을 받는지: 받기 전용 채널을 '알림 받기'로 연결했을 때.
+ * 점검 · 알릴 조건과 보고 받을 곳은 하트비트가 꺼져 있어도 이 알림을 판단할 때 쓰입니다.
+ */
+export function receivesNotices(agent: Pick<AgentView, 'links'>, modules: readonly Pick<ModuleView, 'id' | 'channel' | 'canSend'>[]): boolean {
+  return agent.links.some((l) => {
+    if (l.trigger === 'none') return false;
+    const m = modules.find((x) => x.id === l.moduleId);
+    return Boolean(m && m.channel && !m.canSend);
+  });
+}
+
 /** 저장된 설정과 화면 값이 같은지 (저장 버튼 상태) */
 export function sameHeartbeat(a: HeartbeatForm, b: HeartbeatForm): boolean {
   const pa = heartbeatPayload(a);

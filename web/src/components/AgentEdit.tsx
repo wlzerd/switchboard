@@ -1,19 +1,117 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AGENT_COLORS, agentNameProblem, NAME_MAX } from '../lib/agent';
 import { api, ApiError, errorText } from '../lib/api';
+import { heartbeatFormOf, heartbeatFormProblem, heartbeatPayload, intervalChoices, intervalLabel, receivesNotices, sameHeartbeat, type HeartbeatForm, type HeartbeatLimits } from '../lib/autonomy';
+import { relTime } from '../lib/format';
 import { refreshOverview, toast, useApp } from '../lib/store';
-import type { AgentView, Effort, ModelInfo } from '../lib/types';
-import { Avatar, Modal } from './ui';
+import type { AgentView, Effort, Meta, ModelInfo, ModuleView } from '../lib/types';
+import { Icon } from './Icon';
+import { Avatar, Modal, Seg, Switch } from './ui';
 import { EffortPicker, ModelPicker } from './ModelPicker';
 
-type Field = 'name' | 'color' | 'role' | 'model' | 'form';
+type Field = 'name' | 'color' | 'role' | 'model' | 'heartbeat' | 'form';
 
 function fieldOf(code: string): Field {
   if (code.startsWith('agent_name')) return 'name';
   if (code === 'agent_color') return 'color';
   if (code.startsWith('agent_role')) return 'role';
   if (code.startsWith('agent_model') || code.startsWith('agent_effort') || code.startsWith('key_') || code.startsWith('anthropic')) return 'model';
+  if (code.startsWith('heartbeat') || code.startsWith('report')) return 'heartbeat';
   return 'form';
+}
+
+/**
+ * 하트비트: 스위치를 켜면 간격 · 활동 시간 · 점검 · 알릴 조건 · 보고 받을 곳이 펼쳐집니다.
+ * 점검 · 알릴 조건과 보고 받을 곳은 모듈 자동 알림(새 메일 등)에도 쓰여서, 그런 알림을 받는 에이전트는 꺼져 있어도 보입니다.
+ */
+function HeartbeatFields({ form, set, limits, senders, notices, lastAt, error }: { form: HeartbeatForm; set: (patch: Partial<HeartbeatForm>) => void; limits: HeartbeatLimits; senders: readonly ModuleView[]; notices: boolean; lastAt: number | null; error: string | null }) {
+  const choices = intervalChoices(limits, form.everyMinutes);
+  return (
+    <div className="hb-box">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          {form.enabled ? (
+            <span className="hb-mark">
+              <Icon name="pulse" size={13} stroke={2.2} />
+            </span>
+          ) : null}
+          하트비트
+        </span>
+        {lastAt ? (
+          <span className="muted" style={{ fontSize: 11.5 }}>
+            마지막 {relTime(lastAt)}
+          </span>
+        ) : null}
+        <span style={{ marginLeft: 'auto' }}>
+          <Switch checked={form.enabled} label="하트비트 켜기" onChange={(enabled) => set({ enabled })} />
+        </span>
+      </div>
+      {form.enabled ? (
+        <div className="hb-reveal">
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+            <select className="select" style={{ height: 34, fontSize: 13, flex: '1 1 110px' }} aria-label="확인 간격" value={form.everyMinutes} onChange={(e) => set({ everyMinutes: Number(e.target.value) })}>
+              {choices.map((m) => (
+                <option key={m} value={m}>
+                  {intervalLabel(m)}마다
+                </option>
+              ))}
+            </select>
+            <Seg
+              value={form.allDay ? 'all' : 'hours'}
+              options={[
+                { value: 'all', label: '하루 종일' },
+                { value: 'hours', label: '시간 지정' },
+              ]}
+              onChange={(v) => set({ allDay: v === 'all' })}
+              label="활동 시간"
+            />
+          </div>
+          {!form.allDay ? (
+            <div className="hb-reveal" style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <input className="input mono" type="time" style={{ height: 34, fontSize: 13, flex: 1, minWidth: 0 }} aria-label="활동 시작" value={form.start} onChange={(e) => set({ start: e.target.value })} />
+              <span className="muted">–</span>
+              <input className="input mono" type="time" style={{ height: 34, fontSize: 13, flex: 1, minWidth: 0 }} aria-label="활동 끝" value={form.end} onChange={(e) => set({ end: e.target.value })} />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {form.enabled || notices ? (
+        <div className="hb-reveal">
+          <textarea
+            className="textarea"
+            rows={3}
+            style={{ fontSize: 13 }}
+            aria-label="점검 · 알릴 조건"
+            placeholder="점검 · 알릴 조건"
+            maxLength={limits.checklistMax + 200}
+            value={form.checklist}
+            onChange={(e) => set({ checklist: e.target.value })}
+          />
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+            <span className="section-label" style={{ flex: 'none' }}>
+              보고
+            </span>
+            <select className="select" style={{ height: 34, fontSize: 13, flex: '1 1 100px', minWidth: 0 }} aria-label="보고 받을 채널" value={form.reportModule} onChange={(e) => set({ reportModule: e.target.value })}>
+              <option value="">화면에만</option>
+              {senders.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            {form.reportModule ? (
+              <input className="input mono" style={{ height: 34, fontSize: 13, flex: '1 1 120px', minWidth: 0 }} aria-label="보고 받을 대상" placeholder="#채널 또는 대화 id" value={form.reportTarget} onChange={(e) => set({ reportTarget: e.target.value })} />
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {error ? (
+        <span className="err" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 export function ColorPicker({ value, onChange }: { value: string; onChange: (c: string) => void }) {
@@ -52,6 +150,12 @@ export function ColorPicker({ value, onChange }: { value: string; onChange: (c: 
 
 export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: () => void }) {
   const agents = useApp((s) => s.overview?.agents);
+  const meta = useApp((s) => s.meta) as Meta;
+  const modules = useApp((s) => s.overview?.modules) ?? [];
+  const limits = meta.heartbeat;
+  const hbSaved = useMemo(() => heartbeatFormOf(agent, limits), [agent, limits]);
+  const [hb, setHb] = useState<HeartbeatForm>(hbSaved);
+  const hbDirty = !sameHeartbeat(hb, hbSaved);
   const [name, setName] = useState(agent.name);
   const [color, setColor] = useState(agent.color);
   const [role, setRole] = useState(agent.role);
@@ -82,9 +186,19 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
     if (effort && !m.efforts.includes(effort)) setEffort(null);
   };
 
+  const setHeartbeat = (patch: Partial<HeartbeatForm>): void => {
+    setHb((f) => ({ ...f, ...patch }));
+    if (error?.field === 'heartbeat') setError(null);
+  };
+
   const save = async (): Promise<void> => {
     if (nameProblem) {
       setError({ field: 'name', text: nameProblem });
+      return;
+    }
+    const hbProblem = hbDirty ? heartbeatFormProblem(hb, limits, modules) : null;
+    if (hbProblem) {
+      setError({ field: 'heartbeat', text: hbProblem });
       return;
     }
     const patch: Record<string, unknown> = {};
@@ -93,19 +207,25 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
     if (role.trim() !== agent.role) patch['role'] = role.trim();
     if (model !== agent.model) patch['model'] = model;
     if (effort !== agent.effort) patch['effort'] = effort;
-    if (Object.keys(patch).length === 0) {
+    if (Object.keys(patch).length === 0 && !hbDirty) {
       onClose();
       return;
     }
     setBusy(true);
     setError(null);
+    // 에이전트 정보와 하트비트는 따로 저장합니다. 하트비트에서 실패하면 그 칸 아래에 이유를 보여 줍니다.
+    let stage: 'agent' | 'heartbeat' = 'agent';
     try {
-      await api(`/api/agents/${agent.id}`, { method: 'PATCH', body: patch });
+      if (Object.keys(patch).length > 0) await api(`/api/agents/${agent.id}`, { method: 'PATCH', body: patch });
+      stage = 'heartbeat';
+      if (hbDirty) await api(`/api/agents/${agent.id}/heartbeat`, { method: 'PUT', body: heartbeatPayload(hb) });
       refreshOverview(0);
-      toast(`${name.trim()} 설정을 저장했습니다`, 'ok');
+      const turned = hbDirty && hb.enabled !== hbSaved.enabled ? (hb.enabled ? ` · 하트비트 ${intervalLabel(hb.everyMinutes)}마다` : ' · 하트비트 끔') : '';
+      toast(`${name.trim()} 설정을 저장했습니다${turned}`, 'ok');
       onClose();
     } catch (err) {
-      setError({ field: err instanceof ApiError ? fieldOf(err.code) : 'form', text: errorText(err) });
+      if (stage === 'heartbeat') refreshOverview(0);
+      setError({ field: stage === 'heartbeat' ? 'heartbeat' : err instanceof ApiError ? fieldOf(err.code) : 'form', text: errorText(err) });
     } finally {
       setBusy(false);
     }
@@ -154,6 +274,7 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
           <EffortPicker model={info} value={effort} onChange={setEffort} />
           {error?.field === 'model' ? <span className="err">{error.text}</span> : null}
         </div>
+        <HeartbeatFields form={hb} set={setHeartbeat} limits={limits} senders={modules.filter((m) => m.canSend)} notices={receivesNotices(agent, modules)} lastAt={agent.heartbeat?.lastAt ?? null} error={error?.field === 'heartbeat' ? error.text : null} />
         {error?.field === 'form' ? (
           <span className="err" role="alert">
             {error.text}

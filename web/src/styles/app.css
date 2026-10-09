@@ -1166,6 +1166,21 @@ a {
   border-color: var(--text2);
   transition: opacity 0.3s ease;
 }
+.hb-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.hb-reveal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: rise 0.25s ease backwards;
+}
 .hb-mark {
   display: grid;
   place-items: center;

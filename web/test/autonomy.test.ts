@@ -8,6 +8,7 @@ import {
   heartbeatPayload,
   intervalChoices,
   intervalLabel,
+  receivesNotices,
   sameHeartbeat,
   supervisorChoices,
   type HeartbeatForm,
@@ -209,5 +210,26 @@ describe('위임 선', () => {
     expect(arcBow(100)).toBeCloseTo(58);
     expect(arcBow(-100)).toBe(arcBow(100));
     expect(arcBow(10_000)).toBe(ARC_BOW_MAX);
+  });
+});
+
+describe('모듈 자동 알림을 받는지 (알릴 조건 칸을 하트비트가 꺼져도 보일지)', () => {
+  const modules = [
+    { id: 'email', channel: true, canSend: false },
+    { id: 'discord', channel: true, canSend: true },
+    { id: 'notion', channel: false, canSend: false },
+  ];
+  const link = (moduleId: string, trigger: 'direct' | 'all' | 'none' = 'direct') => ({ moduleId, targets: [], trigger });
+
+  it.each([
+    ['받기 전용 채널을 알림 받기로 연결', [link('email')], true],
+    ['받기 전용 채널을 모든 메시지로 연결', [link('email', 'all')], true],
+    ['받기 전용 채널을 도구만으로 연결', [link('email', 'none')], false],
+    ['보내기도 하는 채널만', [link('discord', 'all')], false],
+    ['채널이 아닌 도구 모듈만', [link('notion')], false],
+    ['지워진 모듈', [link('gone')], false],
+    ['연결 없음', [], false],
+  ])('%s → %s', (_label, links, expected) => {
+    expect(receivesNotices({ links }, modules)).toBe(expected);
   });
 });
