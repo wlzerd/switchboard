@@ -43,6 +43,11 @@ const PATHS: Record<string, string> = {
   eye: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
   stop: 'M7 7h10v10H7z',
   logs: 'M5 6h14M5 10h14M5 14h9M5 18h6',
+  mail: 'M3.5 7.5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2zM4 7.5l8 6 8-6',
+  pulse: 'M3 12h4l2.5-6 4 12 2.5-6H21',
+  forward: 'M14 5l6 6-6 6M20 11H10a5 5 0 0 0-5 5v3',
+  report: 'M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0M12 8v3.5M12 14h.01',
+  screen: 'M3.5 5.5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2zM8.5 20.5h7M12 16.5v4',
 };
 
 export type IconName = keyof typeof PATHS;

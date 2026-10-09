@@ -6,7 +6,7 @@ export const MODULE_ID_RE = /^[a-z][a-z0-9-]{1,31}$/;
 export const TOOL_NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
 export const ENV_NAME_RE = /^[A-Z][A-Z0-9_]{1,63}$/;
 
-const ICONS = ['chat', 'plane', 'git', 'rss', 'doc', 'link', 'cube', 'globe', 'clock', 'bolt'] as const;
+const ICONS = ['chat', 'plane', 'git', 'rss', 'doc', 'link', 'cube', 'globe', 'clock', 'bolt', 'mail', 'screen'] as const;
 
 const jsonSchemaObject = z
   .object({
@@ -45,9 +45,18 @@ export const manifestSchema = z.object({
   channel: z
     .object({
       label: z.string().min(1).max(40),
+      /** false 면 받기만 하는 채널 (예: 이메일). 전송 권한 · send_message · 보고 채널에서 빠집니다. */
+      send: z.boolean().default(true),
     })
     .nullable()
     .default(null),
+  /** 화면 제어 모듈: 연결된 에이전트에게 Claude 컴퓨터 사용 도구 묶음을 열어 주고, 그 동작을 export default 의 computer.run 으로 처리합니다. */
+  computer: z
+    .object({ label: z.string().min(1).max(40) })
+    .nullable()
+    .default(null),
+  /** 기본 제공 모듈이 처음 등록될 때 켤지 (화면 제어처럼 위험한 모듈은 false) */
+  defaultEnabled: z.boolean().default(true),
   env: z.array(envSchema).max(20).default([]),
   permissions: z
     .object({
@@ -96,6 +105,10 @@ export function parseManifest(raw: unknown, source: string): Manifest {
   for (const t of m.tests) {
     if (!names.has(t.tool)) throw new ModuleError('manifest_test_tool', `${source}: 테스트가 선언되지 않은 도구 '${t.tool}'을(를) 부릅니다.`);
   }
+  if (m.channel && m.computer) {
+    throw new ModuleError('manifest_channel_computer', `${source}: channel 과 computer 는 함께 선언할 수 없습니다. 메시지 채널과 화면 제어는 서로 다른 모듈로 만드세요.`);
+  }
+  if (m.kind === 'skill' && m.computer) throw new ModuleError('manifest_skill_computer', `${source}: 스킬은 화면 제어(computer)를 선언할 수 없습니다.`);
   if (m.kind === 'skill' && m.tools.length !== 1) {
     throw new ModuleError('manifest_skill_tools', `${source}: 스킬은 도구를 정확히 하나 선언해야 합니다. 지금 ${m.tools.length}개입니다.`);
   }

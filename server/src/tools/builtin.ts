@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { Config } from '../config/env.ts';
 import type { AgentRow, Store } from '../db/store.ts';
 import { ValidationError } from '../errors.ts';
+import { displayPath, isInsidePath, resolveToolPath } from '../permissions/folders.ts';
 import { matchHost } from '../permissions/match.ts';
 import { packageManagerOf, parseCommand } from '../permissions/shell.ts';
 import type { ModuleRegistry } from '../modules/registry.ts';
@@ -27,6 +29,20 @@ export interface ScheduleApi {
   cancel(agent: AgentRow, id: string): string;
 }
 
+export interface DelegateInput {
+  to: string;
+  task: string;
+  reason: string;
+}
+
+export interface HeartbeatToolInput {
+  enabled: boolean;
+  everyMinutes?: number;
+  checklist?: string;
+  /** 'HH:MM-HH:MM' · 빈 문자열이면 하루 종일 */
+  activeHours?: string;
+}
+
 export interface ToolServices {
   config: Config;
   store: Store;
@@ -35,29 +51,22 @@ export interface ToolServices {
   createSkill: (agent: AgentRow, env: ToolEnv, input: SkillInput) => Promise<string>;
   createModule: (agent: AgentRow, env: ToolEnv, files: SourceFile[]) => Promise<string>;
   schedules: ScheduleApi;
+  delegate: (agent: AgentRow, env: ToolEnv, input: DelegateInput) => Promise<string>;
+  heartbeat: (agent: AgentRow, env: ToolEnv, input: HeartbeatToolInput) => string;
 }
 
-/** 작업 폴더 기준 경로를 실제 경로(심볼릭 링크를 푼 값)로. 없는 경로는 존재하는 조상까지만 풉니다. */
-export function resolveInWorkspace(workspace: string, p: string): string {
-  const abs = path.resolve(workspace, p);
-  let cur = abs;
-  const rest: string[] = [];
-  while (!fs.existsSync(cur)) {
-    const parent = path.dirname(cur);
-    if (parent === cur) break;
-    rest.unshift(path.basename(cur));
-    cur = parent;
-  }
-  let real = cur;
-  try {
-    real = fs.realpathSync(cur);
-  } catch {
-    // 권한 문제 등으로 못 풀면 그대로 둡니다 (가드가 경로를 다시 확인).
-  }
-  return path.join(real, ...rest);
+const realpathNative = (p: string): string => fs.realpathSync.native(p);
+
+/**
+ * 도구 입력 경로 → 실제 절대 경로 (심볼릭 링크 · 대소문자를 운영체제가 푼 값).
+ * 상대 경로는 작업 폴더 기준, 절대 경로와 '~/…' 는 허용 폴더를 가리킬 때 씁니다. 들어가도 되는 곳인지는 기본 금지 조항이 판단합니다.
+ */
+export function toolPath(env: ToolEnv, p: string): string {
+  return resolveToolPath(p, env.workspace, os.homedir(), realpathNative);
 }
 
-const rel = (env: ToolEnv, abs: string): string => path.relative(env.workspace, abs) || '.';
+/** 결과 문구 · 권한 대상: 작업 폴더 안은 상대 경로, 밖(허용 폴더)은 '~/…' 또는 절대 경로 */
+const rel = (env: ToolEnv, abs: string): string => (isInsidePath(env.workspace, abs) ? path.relative(env.workspace, abs) || '.' : displayPath(abs, os.homedir()));
 
 function str(input: Record<string, unknown>, key: string): string {
   const v = input[key];
@@ -69,11 +78,11 @@ function str(input: Record<string, unknown>, key: string): string {
 const fsRead = (s: ToolServices): BuiltinTool => ({
   name: 'fs_read',
   title: '파일 읽기',
-  description: '작업 폴더 안의 텍스트 파일을 읽습니다. offset(1부터 시작하는 줄 번호)과 limit(줄 수)로 일부만 읽을 수 있습니다.',
+  description: '작업 폴더나 허용 폴더 안의 텍스트 파일을 읽습니다. offset(1부터 시작하는 줄 번호)과 limit(줄 수)로 일부만 읽을 수 있습니다.',
   input_schema: {
     type: 'object',
     properties: {
-      path: { type: 'string', minLength: 1, maxLength: 500, description: '작업 폴더 기준 경로' },
+      path: { type: 'string', minLength: 1, maxLength: 500, description: '작업 폴더 기준 상대 경로, 또는 허용 폴더 안의 절대 경로' },
       offset: { type: 'integer', minimum: 1 },
       limit: { type: 'integer', minimum: 1, maximum: 5000 },
     },
@@ -81,11 +90,11 @@ const fsRead = (s: ToolServices): BuiltinTool => ({
     additionalProperties: false,
   },
   describe(input, env): Described {
-    const abs = resolveInWorkspace(env.workspace, str(input, 'path'));
+    const abs = toolPath(env, str(input, 'path'));
     return { permission: 'fs.read', target: rel(env, abs), paths: [abs], summary: rel(env, abs) };
   },
   async run(input, env) {
-    const abs = resolveInWorkspace(env.workspace, str(input, 'path'));
+    const abs = toolPath(env, str(input, 'path'));
     let stat: fs.Stats;
     try {
       stat = fs.statSync(abs);
@@ -111,11 +120,11 @@ const fsRead = (s: ToolServices): BuiltinTool => ({
 const fsWrite = (): BuiltinTool => ({
   name: 'fs_write',
   title: '파일 쓰기',
-  description: '작업 폴더 안의 파일에 내용을 씁니다. append 가 true 면 뒤에 덧붙입니다. 필요한 폴더는 만듭니다.',
+  description: '작업 폴더나 읽기·쓰기 허용 폴더 안의 파일에 내용을 씁니다. append 가 true 면 뒤에 덧붙입니다. 필요한 폴더는 만듭니다.',
   input_schema: {
     type: 'object',
     properties: {
-      path: { type: 'string', minLength: 1, maxLength: 500 },
+      path: { type: 'string', minLength: 1, maxLength: 500, description: '작업 폴더 기준 상대 경로, 또는 읽기·쓰기 허용 폴더 안의 절대 경로' },
       content: { type: 'string', maxLength: 1_000_000 },
       append: { type: 'boolean' },
     },
@@ -123,11 +132,11 @@ const fsWrite = (): BuiltinTool => ({
     additionalProperties: false,
   },
   describe(input, env): Described {
-    const abs = resolveInWorkspace(env.workspace, str(input, 'path'));
+    const abs = toolPath(env, str(input, 'path'));
     return { permission: 'fs.write', target: rel(env, abs), paths: [abs], summary: rel(env, abs) };
   },
   async run(input, env) {
-    const abs = resolveInWorkspace(env.workspace, str(input, 'path'));
+    const abs = toolPath(env, str(input, 'path'));
     if (fs.existsSync(abs) && fs.statSync(abs).isDirectory()) throw new ValidationError('fs_is_dir', `'${rel(env, abs)}'은(는) 폴더라 쓸 수 없습니다.`);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     const content = str(input, 'content');
@@ -140,18 +149,21 @@ const fsWrite = (): BuiltinTool => ({
 const fsList = (): BuiltinTool => ({
   name: 'fs_list',
   title: '파일 목록',
-  description: '작업 폴더 안의 파일과 폴더 목록을 봅니다. depth 로 하위 폴더를 몇 단계까지 볼지 정합니다 (1~3).',
+  description: '작업 폴더나 허용 폴더 안의 파일과 폴더 목록을 봅니다. depth 로 하위 폴더를 몇 단계까지 볼지 정합니다 (1~3).',
   input_schema: {
     type: 'object',
-    properties: { path: { type: 'string', maxLength: 500 }, depth: { type: 'integer', minimum: 1, maximum: 3 } },
+    properties: {
+      path: { type: 'string', maxLength: 500, description: '작업 폴더 기준 상대 경로, 또는 허용 폴더 안의 절대 경로. 비우면 작업 폴더' },
+      depth: { type: 'integer', minimum: 1, maximum: 3 },
+    },
     additionalProperties: false,
   },
   describe(input, env): Described {
-    const abs = resolveInWorkspace(env.workspace, str(input, 'path') || '.');
+    const abs = toolPath(env, str(input, 'path') || '.');
     return { permission: 'fs.read', target: rel(env, abs), paths: [abs], summary: rel(env, abs) };
   },
   async run(input, env) {
-    const root = resolveInWorkspace(env.workspace, str(input, 'path') || '.');
+    const root = toolPath(env, str(input, 'path') || '.');
     if (!fs.existsSync(root)) throw new ValidationError('fs_not_found', `폴더 '${rel(env, root)}'이(가) 없습니다.`);
     const depth = typeof input['depth'] === 'number' ? input['depth'] : 1;
     const out: string[] = [];
@@ -178,22 +190,37 @@ const fsList = (): BuiltinTool => ({
 const shellExec = (s: ToolServices): BuiltinTool => ({
   name: 'shell_exec',
   title: '셸 명령',
-  description: '작업 폴더에서 셸 명령을 실행하고 종료 코드와 출력을 돌려줍니다. 서버의 비밀 환경 변수는 전달되지 않습니다.',
+  description:
+    '셸 명령을 실행하고 종료 코드와 출력을 돌려줍니다. 기본 실행 폴더는 작업 폴더이고, cwd 로 읽기·쓰기 허용 폴더에서 실행할 수 있습니다. ' +
+    '셸의 ~ 와 $HOME 은 작업 폴더를 뜻하므로 허용 폴더는 절대 경로로 쓰세요. 서버의 비밀 환경 변수는 전달되지 않습니다.',
   input_schema: {
     type: 'object',
-    properties: { command: { type: 'string', minLength: 1, maxLength: 4000 }, timeout_ms: { type: 'integer', minimum: 1000 } },
+    properties: {
+      command: { type: 'string', minLength: 1, maxLength: 4000 },
+      timeout_ms: { type: 'integer', minimum: 1000 },
+      cwd: { type: 'string', maxLength: 500, description: '실행할 폴더. 비우면 작업 폴더. 작업 폴더 기준 상대 경로나 읽기·쓰기 허용 폴더 안의 절대 경로' },
+    },
     required: ['command'],
     additionalProperties: false,
   },
-  describe(input): Described {
+  describe(input, env): Described {
     const command = str(input, 'command');
     const parsed = parseCommand(command);
     const manager = parsed.segments.map(packageManagerOf).find((m) => m !== null) ?? null;
-    if (manager) return { permission: 'pkg.install', target: manager, command, summary: command.slice(0, 120) };
-    return { permission: 'shell.exec', target: command, command, summary: command.slice(0, 120) };
+    const cwdIn = str(input, 'cwd').trim();
+    // 실행 폴더도 경로 검사(작업 폴더 · 읽기·쓰기 허용 폴더)를 받도록 paths 에 넣습니다.
+    const where = cwdIn ? { cwd: toolPath(env, cwdIn), paths: [toolPath(env, cwdIn)] } : {};
+    const summary = `${command.slice(0, 120)}${cwdIn ? ` (${rel(env, toolPath(env, cwdIn))})` : ''}`;
+    if (manager) return { permission: 'pkg.install', target: manager, command, summary, ...where };
+    return { permission: 'shell.exec', target: command, command, summary, ...where };
   },
   run(input, env) {
     const command = str(input, 'command');
+    const cwdIn = str(input, 'cwd').trim();
+    const cwd = cwdIn ? toolPath(env, cwdIn) : env.workspace;
+    if (cwdIn && !(fs.existsSync(cwd) && fs.statSync(cwd).isDirectory())) {
+      return Promise.reject(new ValidationError('shell_cwd', `실행 폴더 '${rel(env, cwd)}'이(가) 없거나 폴더가 아닙니다.`));
+    }
     const limit = Math.min(typeof input['timeout_ms'] === 'number' ? input['timeout_ms'] : s.config.shellTimeoutMs, s.config.shellTimeoutMs);
     const max = s.config.shellOutputMaxBytes;
     const tmp = path.join(env.workspace, '.tmp');
@@ -202,7 +229,8 @@ const shellExec = (s: ToolServices): BuiltinTool => ({
       let child;
       try {
         child = spawn('/bin/sh', ['-c', command], {
-          cwd: env.workspace,
+          cwd,
+          // HOME 을 작업 폴더로 둡니다. 기본 금지 조항(작업 폴더 탈출)도 ~ 와 $HOME 을 작업 폴더로 보고 검사합니다.
           env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin', HOME: env.workspace, TMPDIR: tmp, LANG: process.env['LANG'] ?? 'C.UTF-8', TZ: process.env['TZ'] ?? '' },
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -344,7 +372,7 @@ const sendMessage = (s: ToolServices): BuiltinTool => ({
   },
   async run(input, env) {
     const channel = str(input, 'channel');
-    const linked = s.store.listAgentModules(env.agent.id).map((l) => s.store.findModule(l.moduleId)).filter((m) => m && m.manifest.channel);
+    const linked = s.store.listAgentModules(env.agent.id).map((l) => s.store.findModule(l.moduleId)).filter((m) => m && m.manifest.channel && m.manifest.channel.send !== false);
     if (!linked.some((m) => m?.id === channel)) {
       const names = linked.map((m) => m?.id).join(', ') || '(없음)';
       throw new ValidationError('send_channel', `'${channel}'은(는) 이 에이전트에 연결된 채널 모듈이 아닙니다. 연결된 채널: ${names}`);
@@ -430,6 +458,67 @@ const moduleCreate = (s: ToolServices): BuiltinTool => ({
   },
 });
 
+/* ───────── 위임 ───────── */
+
+const delegateTask = (s: ToolServices): BuiltinTool => ({
+  name: 'delegate_task',
+  title: '다른 에이전트에게 맡기기',
+  description:
+    '다른 에이전트에게 일을 맡깁니다. 권한이 없어 직접 할 수 없는 일이나 다른 에이전트의 역할에 맞는 일을 넘길 때 씁니다. ' +
+    'to 는 시스템 프롬프트의 위임 목록에 있는 에이전트 이름, task 는 그 에이전트가 이 대화를 몰라도 이해할 수 있게 필요한 정보를 모두 담아 씁니다. ' +
+    '결과는 끝나는 대로 이 대화로 돌아옵니다. 한 작업에서는 한 에이전트에게만 맡기고 결과를 기다리세요.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      to: { type: 'string', minLength: 1, maxLength: 24, description: '맡을 에이전트 이름' },
+      task: { type: 'string', minLength: 1, maxLength: 8000, description: '맡길 일 (완결된 설명)' },
+      reason: { type: 'string', maxLength: 500, description: '맡기는 이유 (예: 셸 명령 권한이 없음)' },
+    },
+    required: ['to', 'task'],
+    additionalProperties: false,
+  },
+  describe(input): Described {
+    return { permission: null, target: str(input, 'to'), text: str(input, 'task'), summary: `${str(input, 'to')} · ${str(input, 'task').replace(/\s+/g, ' ').slice(0, 60)}` };
+  },
+  run(input, env) {
+    return s.delegate(env.agent, env, { to: str(input, 'to'), task: str(input, 'task'), reason: str(input, 'reason') });
+  },
+});
+
+/* ───────── 하트비트 ───────── */
+
+const heartbeatSet = (s: ToolServices): BuiltinTool => ({
+  name: 'heartbeat_set',
+  title: '하트비트 설정',
+  description:
+    '무엇을 확인하고 어떤 경우에 알릴지(점검 · 알릴 조건)와, 정해진 간격으로 스스로 점검하는 하트비트를 정합니다. 사용자가 "변화가 생기면 알려줘", "중요한 메일이 오면 알려줘"처럼 지켜봐 달라고 할 때 씁니다. ' +
+    '메일처럼 연결된 모듈이 새 소식을 직접 보내 주는 일은 enabled=false 로 조건만 적고, 스스로 주기적으로 확인해야 하는 일(웹 페이지 · 서버 상태 등)은 enabled=true 와 every_minutes 로 켭니다. ' +
+    '알릴 것이 없으면 조용히 있고, 알릴 것이 있을 때만 보고합니다. 보고 받을 곳이 정해져 있지 않으면 지금 대화한 채널로 보고합니다.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      enabled: { type: 'boolean', description: 'true 면 every_minutes 마다 스스로 점검합니다. 모듈 자동 알림(새 메일 등)만으로 충분하면 false' },
+      every_minutes: { type: 'integer', minimum: 1, maximum: 1440, description: '확인 간격(분)' },
+      checklist: { type: 'string', maxLength: 4000, description: '확인할 것과 알릴 조건 (예: 결제 · 계약 · 장애 관련 메일이 오면 알린다). 하트비트와 모듈 자동 알림 모두 이 조건으로 판단합니다' },
+      active_hours: { type: 'string', maxLength: 20, description: "확인할 시간대 'HH:MM-HH:MM' (서버 시간대). 빈 문자열이면 하루 종일" },
+    },
+    required: ['enabled'],
+    additionalProperties: false,
+  },
+  describe(input): Described {
+    const every = typeof input['every_minutes'] === 'number' ? `${input['every_minutes']}분마다` : '간격 유지';
+    return { permission: 'heartbeat.manage', target: 'heartbeat', text: str(input, 'checklist'), summary: input['enabled'] === true ? `켜기 · ${every}` : '끄기' };
+  },
+  async run(input, env) {
+    return s.heartbeat(env.agent, env, {
+      enabled: input['enabled'] === true,
+      ...(typeof input['every_minutes'] === 'number' ? { everyMinutes: input['every_minutes'] } : {}),
+      ...(typeof input['checklist'] === 'string' ? { checklist: input['checklist'] } : {}),
+      ...(typeof input['active_hours'] === 'string' ? { activeHours: input['active_hours'] } : {}),
+    });
+  },
+});
+
 /* ───────── 예약 ───────── */
 
 const scheduleCreate = (s: ToolServices): BuiltinTool => ({
@@ -477,7 +566,7 @@ const scheduleCancel = (s: ToolServices): BuiltinTool => ({
 });
 
 export function builtinTools(s: ToolServices): BuiltinTool[] {
-  return [fsRead(s), fsWrite(), fsList(), shellExec(s), httpRequest(s), sendMessage(s), skillCreate(s), moduleCreate(s), scheduleCreate(s), scheduleList(s), scheduleCancel(s)];
+  return [fsRead(s), fsWrite(), fsList(), shellExec(s), httpRequest(s), sendMessage(s), skillCreate(s), moduleCreate(s), scheduleCreate(s), scheduleList(s), scheduleCancel(s), delegateTask(s), heartbeatSet(s)];
 }
 
 /** 이 도구들을 쓰려면 어떤 권한이 하나라도 허용/확인이어야 하는지 (모두 차단이면 목록에서 뺍니다). */
@@ -493,4 +582,7 @@ export const TOOL_PERMISSION: Record<string, string[]> = {
   schedule_cancel: ['schedule.create'],
   schedule_list: [],
   send_message: [],
+  // 위임은 권한 항목이 아니라 에이전트의 위임 설정(보내기 허용)으로 켜고 끕니다.
+  delegate_task: [],
+  heartbeat_set: ['heartbeat.manage'],
 };

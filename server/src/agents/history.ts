@@ -105,11 +105,18 @@ export function danglingToolResults(messages: readonly HistoryMessage[]): Histor
   if (!last || last.role !== 'assistant') return null;
   const bs = blocks(last.content);
   if (!bs) return null;
-  const ids = bs.filter((b) => b.type === 'tool_use' && typeof b.id === 'string').map((b) => b.id as string);
-  if (ids.length === 0) return null;
+  const uses = bs.filter((b) => b.type === 'tool_use' && typeof b.id === 'string');
+  if (uses.length === 0) return null;
   return {
     role: 'user',
-    content: ids.map((id) => ({ type: 'tool_result', tool_use_id: id, is_error: true, content: '이전 실행이 중단되어 이 도구의 결과가 없습니다. 필요하면 다시 호출하세요.' })),
+    content: uses.map((b) => ({
+      type: 'tool_result',
+      tool_use_id: b.id as string,
+      // 도구 묶음(화면 제어)의 호출이면 결과에도 그 이름을 붙여야 API 가 받아 줍니다.
+      ...(typeof b['toolset_name'] === 'string' ? { toolset_name: b['toolset_name'] } : {}),
+      is_error: true,
+      content: '이전 실행이 중단되어 이 도구의 결과가 없습니다. 필요하면 다시 호출하세요.',
+    })),
   };
 }
 

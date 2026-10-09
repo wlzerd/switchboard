@@ -77,6 +77,7 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
     protectedPaths: [path.join(config.dataDir, 'hooks'), path.join(config.rootDir, 'config'), path.join(config.dataDir, 'switchboard.db')],
     floodPerMinute: config.guardFloodPerMinute,
     loopRepeat: config.guardLoopRepeat,
+    realpath: (p) => fs.realpathSync.native(p),
   };
 
   const app = {
@@ -97,7 +98,7 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
   });
 
   const scheduler = new SchedulerService(store, bus, log.child('scheduler'));
-  const manager = new AgentManager({ config, store, bus, log: log.child('agents'), anthropic, registry, hooks, approvals, guardState, scheduler, presets });
+  const manager = new AgentManager({ config, store, bus, log: log.child('agents'), anthropic, registry, hooks, approvals, guardState, scheduler, presets, secretDirs: guardLists.secretDirectories });
 
   registry.init();
   manager.init();

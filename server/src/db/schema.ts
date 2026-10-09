@@ -184,4 +184,18 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE schedules ADD COLUMN reply TEXT;
   `,
+  // v5: 위임 설정 · 하트비트 · 보고 받을 곳, 조용한 작업(보고할 게 없으면 남기지 않음)과 위임 추적
+  `
+  ALTER TABLE agents ADD COLUMN delegation TEXT NOT NULL DEFAULT '{"accept":false,"send":false,"supervisorId":null}';
+  ALTER TABLE agents ADD COLUMN heartbeat TEXT;
+  ALTER TABLE agents ADD COLUMN heartbeat_last_at INTEGER;
+  ALTER TABLE agents ADD COLUMN report TEXT;
+  ALTER TABLE tasks ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN delegated_by TEXT;
+  CREATE INDEX idx_tasks_delegated ON tasks(delegated_by) WHERE delegated_by IS NOT NULL;
+  `,
+  // v6: 허용 폴더 (작업 폴더 밖에서 사용자가 허락한 폴더와 읽기 · 쓰기 범위)
+  `
+  ALTER TABLE agents ADD COLUMN folders TEXT NOT NULL DEFAULT '[]';
+  `,
 ];

@@ -6,7 +6,7 @@ import type { ModuleRow, ModuleStatus } from '../db/store.ts';
 import { ModuleError } from '../errors.ts';
 import type { Logger } from '../log.ts';
 import type { Manifest } from './manifest.ts';
-import type { ChildMessage, InboundMessage, ParentMessage } from './protocol.ts';
+import type { ChildMessage, ImagePayload, InboundMessage, ParentMessage } from './protocol.ts';
 
 /** 재시작 대기 시간: 1초, 2초, 4초 … 최대 maxMs. attempt 는 1부터. */
 export function restartDelayMs(attempt: number, baseMs = 1000, maxMs = 60_000): number {
@@ -35,8 +35,13 @@ export interface HostDeps {
   onLog: (id: string, level: 'info' | 'warn' | 'error', line: string) => void;
 }
 
+interface Reply {
+  output: string;
+  image: ImagePayload | null;
+}
+
 interface Pending {
-  resolve: (output: string) => void;
+  resolve: (reply: Reply) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
 }
@@ -144,7 +149,8 @@ export class ModuleHost {
     this.child = child;
     child.stdout?.setEncoding('utf8').on('data', (d: string) => d.split('\n').filter(Boolean).forEach((l) => this.pushLog('info', l)));
     child.stderr?.setEncoding('utf8').on('data', (d: string) => d.split('\n').filter(Boolean).forEach((l) => {
-      if (l.includes('ExperimentalWarning') || l.includes('--trace-warnings')) return;
+      // Node 의 실험 기능 · 하위 프로세스 허용(--allow-child-process) 경고는 모듈 오류가 아닙니다.
+      if (l.includes('ExperimentalWarning') || l.includes('--trace-warnings') || l.includes('SecurityWarning: The flag --allow-child-process')) return;
       this.pushLog('error', l);
     }));
 
@@ -182,7 +188,7 @@ export class ModuleHost {
             if (!p) return;
             this.pending.delete(m.id);
             clearTimeout(p.timer);
-            if (m.ok) p.resolve(m.output);
+            if (m.ok) p.resolve({ output: m.output, image: m.image ?? null });
             else p.reject(new ModuleError('module_tool_error', `모듈 '${this.id}' 실행 오류: ${m.error.message}`, 502, { name: m.error.name }));
             return;
           }
@@ -264,13 +270,12 @@ export class ModuleHost {
     }, this.deps.config.moduleIdleTimeoutMs);
   }
 
-  private request(msg: ParentMessage & { id: number }, label: string): Promise<string> {
+  private request(msg: ParentMessage & { id: number }, label: string, timeoutMs = this.deps.config.moduleCallTimeoutMs): Promise<Reply> {
     const child = this.child;
     if (!child || !child.connected) {
       return Promise.reject(new ModuleError('module_not_running', `모듈 '${this.id}' 프로세스가 떠 있지 않습니다.`, 503));
     }
-    const timeoutMs = this.deps.config.moduleCallTimeoutMs;
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<Reply>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(msg.id);
         reject(new ModuleError('module_call_timeout', `모듈 '${this.id}'의 ${label}이(가) ${Math.round(timeoutMs / 1000)}초 안에 응답하지 않았습니다.`, 504));
@@ -284,13 +289,21 @@ export class ModuleHost {
     await this.start();
     this.armIdle();
     this.seq += 1;
-    return this.request({ t: 'call', id: this.seq, tool, input, meta }, `도구 '${tool}'`);
+    return (await this.request({ t: 'call', id: this.seq, tool, input, meta }, `도구 '${tool}'`)).output;
   }
 
   async send(target: string, text: string): Promise<string> {
     await this.start();
     this.seq += 1;
-    return this.request({ t: 'send', id: this.seq, target, text }, '메시지 전송');
+    return (await this.request({ t: 'send', id: this.seq, target, text }, '메시지 전송')).output;
+  }
+
+  /** 화면 제어 동작 하나. 기다리기 · 키 누르고 있기처럼 오래 걸리는 동작은 timeoutMs 를 늘려서 부릅니다. */
+  async computer(action: string, input: unknown, timeoutMs: number): Promise<Reply> {
+    await this.start();
+    this.armIdle();
+    this.seq += 1;
+    return this.request({ t: 'computer', id: this.seq, action, input }, `화면 동작 '${action}'`, Math.max(timeoutMs, this.deps.config.moduleCallTimeoutMs));
   }
 
   /** 프로세스를 내립니다. deactivate 를 기다리되 5초가 지나면 강제로 끝냅니다. */

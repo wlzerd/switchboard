@@ -85,7 +85,7 @@ describe('그래프 배치', () => {
   const overview = (agents: number, modules: number, skills: number): Overview =>
     ({
       server: { startedAt: 0, now: 0, tz: 'UTC', tokensToday: 0, approvalsPending: 0, envKey: false },
-      agents: Array.from({ length: agents }, (_, i) => ({ id: `a${i}` })),
+      agents: Array.from({ length: agents }, (_, i) => ({ id: `a${i}`, delegation: { accept: false, send: false, supervisorId: null } })),
       modules: Array.from({ length: modules }, (_, i) => ({ id: `m${i}`, status: 'running' })),
       skills: Array.from({ length: skills }, (_, i) => ({ id: `s${i}` })),
       builtinNodes: [{ id: 'builtin:web', label: '웹', tools: [] }],

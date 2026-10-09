@@ -73,7 +73,7 @@ export function Steps({ steps }: { steps: TaskStep[] }) {
 }
 
 export function ModuleIcon({ icon, size = 18 }: { icon: string; size?: number }) {
-  const map: Record<string, string> = { chat: 'chat', plane: 'plane', git: 'git', rss: 'rss', doc: 'doc', link: 'link', cube: 'cube', globe: 'globe', clock: 'clock', bolt: 'bolt' };
+  const map: Record<string, string> = { chat: 'chat', plane: 'plane', git: 'git', rss: 'rss', doc: 'doc', link: 'link', cube: 'cube', globe: 'globe', clock: 'clock', bolt: 'bolt', mail: 'mail', screen: 'screen' };
   return <Icon name={map[icon] ?? 'cube'} size={size} />;
 }
 

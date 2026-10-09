@@ -1,6 +1,7 @@
 # 서드파티 라이선스
 
 `npm run licenses -- --write` 로 만든 파일입니다. 배포되는 의존성(개발 도구 제외)과 라이선스, 출처를 적습니다.
+`(MIT OR EUPL-1.1+)` 처럼 고를 수 있게 둔 라이선스는 그중 허용형(MIT 등)으로 씁니다.
 
 | 패키지 | 버전 | 라이선스 | 출처 |
 |---|---|---|---|
@@ -33,6 +34,7 @@
 | @sapphire/async-queue | 1.5.5 | MIT | https://github.com/sapphiredev/utilities |
 | @sapphire/shapeshift | 4.0.0 | MIT | https://github.com/sapphiredev/shapeshift |
 | @sapphire/snowflake | 3.5.5 | MIT | https://github.com/sapphiredev/utilities |
+| @selderee/plugin-htmlparser2 | 0.12.0 | MIT | https://github.com/mxxii/selderee |
 | @stablelib/base64 | 1.0.1 | MIT | https://github.com/StableLib/stablelib |
 | @types/d3-color | 3.1.3 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
 | @types/d3-drag | 3.0.7 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
@@ -47,6 +49,7 @@
 | @vladfrangu/async_event_emitter | 2.4.7 | MIT | https://github.com/vladfrangu/async_event_emitter |
 | @xyflow/react | 12.12.0 | MIT | https://github.com/xyflow/xyflow |
 | @xyflow/system | 0.0.83 | MIT | https://github.com/xyflow/xyflow |
+| @zone-eu/mailsplit | 5.4.20 | (MIT OR EUPL-1.1+) | https://github.com/zone-eu/mailsplit |
 | abort-controller | 3.0.0 | MIT | https://github.com/mysticatea/abort-controller |
 | abstract-logging | 2.0.1 | MIT | https://github.com/jsumners/abstract-logging |
 | ajv-formats | 3.0.1 | MIT | https://github.com/ajv-validator/ajv-formats |
@@ -70,12 +73,20 @@
 | d3-transition | 3.0.1 | ISC | https://github.com/d3/d3-transition |
 | d3-zoom | 3.0.0 | ISC | https://github.com/d3/d3-zoom |
 | debug | 4.4.3 | MIT | https://github.com/debug-js/debug |
+| deepmerge-ts | 8.0.2 | BSD-3-Clause | https://github.com/RebeccaStevens/deepmerge-ts |
 | depd | 2.0.0 | MIT | dougwilson/nodejs-depd |
 | dequal | 2.0.3 | MIT | lukeed/dequal |
 | discord-api-types | 0.38.56 | MIT | https://github.com/discordjs/discord-api-types |
 | discord.js | 14.27.0 | Apache-2.0 | https://github.com/discordjs/discord.js |
+| dom-serializer | 2.0.0 | MIT | https://github.com/cheeriojs/dom-serializer |
+| domelementtype | 2.3.0 | BSD-2-Clause | https://github.com/fb55/domelementtype |
+| domhandler | 5.0.3 | BSD-2-Clause | https://github.com/fb55/domhandler |
+| domutils | 3.2.2 | BSD-2-Clause | https://github.com/fb55/domutils |
 | duplexify | 4.1.3 | MIT | https://github.com/mafintosh/duplexify |
+| encoding-japanese | 2.4.0 | MIT | https://github.com/polygonplanet/encoding.js |
 | end-of-stream | 1.4.5 | MIT | https://github.com/mafintosh/end-of-stream |
+| entities | 4.5.0 | BSD-2-Clause | https://github.com/fb55/entities |
+| entities | 7.0.1 | BSD-2-Clause | https://github.com/fb55/entities |
 | escape-html | 1.0.3 | MIT | component/escape-html |
 | event-target-shim | 5.0.1 | MIT | https://github.com/mysticatea/event-target-shim |
 | fast-decode-uri-component | 1.0.1 | MIT | https://github.com/delvedor/fast-decode-uri-component |
@@ -92,34 +103,52 @@
 | find-my-way | 9.9.0 | MIT | https://github.com/delvedor/find-my-way |
 | glob | 13.0.6 | BlueOak-1.0.0 | git@github.com:isaacs/node-glob |
 | grammy | 1.46.0 | MIT | https://github.com/grammyjs/grammY |
+| he | 1.2.0 | MIT | https://github.com/mathiasbynens/he |
+| html-to-text | 10.0.1 | MIT | https://github.com/html-to-text/node-html-to-text |
+| htmlparser2 | 10.1.0 | MIT | https://github.com/fb55/htmlparser2 |
 | http-errors | 2.0.1 | MIT | jshttp/http-errors |
+| iconv-lite | 0.7.3 | MIT | https://github.com/pillarjs/iconv-lite |
+| imapflow | 2.3.0 | MIT | https://github.com/postalsys/imapflow |
 | inherits | 2.0.4 | ISC | https://github.com/isaacs/inherits |
+| ip-address | 10.7.3 | MIT | https://github.com/beaugunderson/ip-address |
 | ipaddr.js | 2.5.0 | MIT | https://github.com/whitequark/ipaddr.js |
 | json-schema-ref-resolver | 3.0.0 | MIT | https://github.com/fastify/json-schema-ref-resolver |
 | json-schema-to-ts | 3.1.1 | MIT | https://github.com/ThomasAribart/json-schema-to-ts |
 | json-schema-traverse | 1.0.0 | MIT | https://github.com/epoberezkin/json-schema-traverse |
+| leac | 0.7.0 | MIT | https://github.com/mxxii/leac |
+| libbase64 | 1.3.2 | MIT | https://github.com/nodemailer/libbase64 |
+| libmime | 5.4.7 | MIT | https://github.com/nodemailer/libmime |
+| libqp | 2.1.2 | MIT | https://github.com/nodemailer/libqp |
 | light-my-request | 6.6.0 | BSD-3-Clause | https://github.com/fastify/light-my-request |
+| linkify-it | 5.0.2 | MIT | markdown-it/linkify-it |
 | lodash.snakecase | 4.1.1 | MIT | lodash/lodash |
 | lodash | 4.18.1 | MIT | lodash/lodash |
 | lru-cache | 11.5.3 | BlueOak-1.0.0 | ssh://git@github.com/isaacs/node-lru-cache |
 | magic-bytes.js | 1.13.1 | MIT | https://github.com/LarsKoelpin/magic-bytes |
+| mailparser | 3.9.37 | MIT | https://github.com/nodemailer/mailparser |
 | mime | 3.0.0 | MIT | https://github.com/broofa/mime |
 | minimatch | 10.2.6 | BlueOak-1.0.0 | git@github.com:isaacs/minimatch |
 | minipass | 7.1.3 | BlueOak-1.0.0 | https://github.com/isaacs/minipass |
 | ms | 2.1.3 | MIT | vercel/ms |
 | node-fetch | 2.7.0 | MIT | https://github.com/bitinn/node-fetch |
+| nodemailer | 10.0.16 | MIT-0 | https://github.com/nodemailer/nodemailer |
 | on-exit-leak-free | 2.1.2 | MIT | https://github.com/mcollina/on-exit-or-gc |
 | once | 1.4.0 | ISC | https://github.com/isaacs/once |
+| parseley | 0.13.1 | MIT | https://github.com/mxxii/parseley |
 | path-scurry | 2.0.2 | BlueOak-1.0.0 | https://github.com/isaacs/path-scurry |
+| peberminta | 0.10.0 | MIT | https://github.com/mxxii/peberminta |
 | pino-abstract-transport | 3.0.0 | MIT | https://github.com/pinojs/pino-abstract-transport |
 | pino-std-serializers | 7.1.0 | MIT | ssh://git@github.com/pinojs/pino-std-serializers |
+| pino | 10.3.1 | MIT | https://github.com/pinojs/pino |
 | pino | 10.4.0 | MIT | https://github.com/pinojs/pino |
 | process-warning | 4.0.1 | MIT | https://github.com/fastify/process-warning |
 | process-warning | 5.1.0 | MIT | https://github.com/fastify/process-warning |
+| punycode.js | 2.3.1 | MIT | https://github.com/mathiasbynens/punycode.js |
 | quick-format-unescaped | 4.0.4 | MIT | https://github.com/davidmarkclements/quick-format |
 | react-dom | 19.3.0 | MIT | https://github.com/react/react |
 | react | 19.3.0 | MIT | https://github.com/react/react |
 | readable-stream | 3.6.2 | MIT | https://github.com/nodejs/readable-stream |
+| real-require | 0.2.0 | MIT | https://github.com/pinojs/real-require |
 | real-require | 1.0.0 | MIT | https://github.com/pinojs/real-require |
 | require-from-string | 2.0.2 | MIT | floatdrop/require-from-string |
 | ret | 0.5.0 | MIT | https://github.com/fent/ret.js |
@@ -128,11 +157,15 @@
 | safe-buffer | 5.2.1 | MIT | https://github.com/feross/safe-buffer |
 | safe-regex2 | 5.1.1 | MIT | https://github.com/fastify/safe-regex2 |
 | safe-stable-stringify | 2.5.0 | MIT | https://github.com/BridgeAR/safe-stable-stringify |
+| safer-buffer | 2.1.2 | MIT | https://github.com/ChALkeR/safer-buffer |
 | scheduler | 0.28.0 | MIT | https://github.com/react/react |
 | secure-json-parse | 4.1.0 | BSD-3-Clause | https://github.com/fastify/secure-json-parse |
+| selderee | 0.12.0 | MIT | https://github.com/mxxii/selderee |
 | semver | 7.8.5 | ISC | https://github.com/npm/node-semver |
 | set-cookie-parser | 2.7.2 | MIT | nfriedly/set-cookie-parser |
 | setprototypeof | 1.2.0 | ISC | https://github.com/wesleytodd/setprototypeof |
+| smart-buffer | 4.2.0 | MIT | https://github.com/JoshGlazebrook/smart-buffer |
+| socks | 2.8.10 | MIT | https://github.com/JoshGlazebrook/socks |
 | sonic-boom | 4.2.1 | MIT | https://github.com/pinojs/sonic-boom |
 | split2 | 4.2.0 | ISC | https://github.com/mcollina/split2 |
 | standardwebhooks | 1.1.1 | MIT | https://github.com/standard-webhooks/standard-webhooks |
@@ -140,12 +173,14 @@
 | stream-shift | 1.0.3 | MIT | https://github.com/mafintosh/stream-shift |
 | string_decoder | 1.3.0 | MIT | https://github.com/nodejs/string_decoder |
 | thread-stream | 4.2.0 | MIT | https://github.com/mcollina/thread-stream |
+| tlds | 1.261.0 | MIT | https://github.com/stephenmathieson/node-tlds |
 | toad-cache | 3.7.4 | MIT | https://github.com/kibertoad/toad-cache |
 | toidentifier | 1.0.1 | MIT | component/toidentifier |
 | tr46 | 0.0.3 | MIT | https://github.com/Sebmaster/tr46.js |
 | ts-algebra | 2.0.0 | MIT | https://github.com/ThomasAribart/ts-algebra |
 | ts-mixer | 6.0.4 | MIT | https://github.com/tannerntannern/ts-mixer |
 | tslib | 2.8.1 | 0BSD | https://github.com/Microsoft/tslib |
+| uc.micro | 2.1.0 | MIT | markdown-it/uc.micro |
 | undici-types | 6.21.0 | MIT | https://github.com/nodejs/undici |
 | undici | 6.29.0 | MIT | https://github.com/nodejs/undici |
 | use-sync-external-store | 1.7.0 | MIT | https://github.com/react/react |
@@ -156,3 +191,13 @@
 | ws | 8.22.0 | MIT | https://github.com/websockets/ws |
 | zod | 4.6.5 | MIT | https://github.com/colinhacks/zod |
 | zustand | 4.5.7 | MIT | https://github.com/pmndrs/zustand |
+
+## 함께 배포하지 않는 외부 프로그램
+
+화면 제어 모듈이 서버 컴퓨터에 설치된 프로그램을 따로 실행해서 씁니다. 코드에 포함하거나 함께 배포하지 않습니다.
+
+| 프로그램 | 쓰는 곳 | 라이선스 | 출처 |
+|---|---|---|---|
+| screencapture · sips · osascript | macOS 화면 제어 | macOS 기본 제공 | Apple |
+| xdotool | Linux(X11) 화면 제어 입력 | BSD-3-Clause 형식 (Jordan Sissel) | https://github.com/jordansissel/xdotool |
+| ImageMagick (import) | Linux(X11) 스크린샷 | ImageMagick License | https://imagemagick.org/license/ |

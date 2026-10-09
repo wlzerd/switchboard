@@ -241,7 +241,7 @@ function LinksModal({ module, agents, onClose }: { module: ModuleView; agents: A
                   <Switch checked={d.on} label={`${a.name} 연결`} onChange={(on) => set({ on })} />
                 </span>
               </div>
-              {d.on && module.channel ? (
+              {d.on && module.canSend ? (
                 <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, paddingLeft: 38 }}>
                   <ChipInput value={d.targets} onChange={(targets) => set({ targets })} label={`${a.name} 대상`} placeholder="모든 대화 · #채널 또는 ID" />
                   <Seg
@@ -336,13 +336,14 @@ function ModuleCard({ m, agents, index }: { m: ModuleView; agents: AgentView[]; 
       <div className="kv">
         <span>제공</span>
         <span className="chips">
-          {m.channel ? <span className="chip msg">채널</span> : null}
+          {m.channel ? <span className="chip msg">{m.canSend ? '채널' : '받기 전용 채널'}</span> : null}
+          {m.computer ? <span className="chip warn">화면 제어{m.screenHolder ? ` · ${m.screenHolder.agentName} 사용 중` : ''}</span> : null}
           {m.tools.map((t) => (
             <span key={t.name} className="chip mono skill" title={t.title}>
               {t.name}
             </span>
           ))}
-          {!m.channel && m.tools.length === 0 ? <span className="muted">없음</span> : null}
+          {!m.channel && !m.computer && m.tools.length === 0 ? <span className="muted">없음</span> : null}
         </span>
         <span>에이전트</span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
@@ -426,7 +427,7 @@ function ModuleCard({ m, agents, index }: { m: ModuleView; agents: AgentView[]; 
                 .env 다시 읽기
               </button>
             ) : null}
-            {m.enabled && m.channel ? (
+            {m.enabled && (m.channel || m.computer) ? (
               <button type="button" className="btn xs" disabled={busy !== null} onClick={() => void run('restart', () => api(`/api/modules/${m.id}/restart`, { body: {} }), `${m.name} 다시 시작`)}>
                 다시 시작
               </button>

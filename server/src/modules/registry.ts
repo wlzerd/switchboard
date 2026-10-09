@@ -9,7 +9,7 @@ import type { Logger } from '../log.ts';
 import { ModuleHost } from './host.ts';
 import { Installer, type Staged } from './install.ts';
 import { parseManifest, type Manifest, type ManifestTool } from './manifest.ts';
-import type { InboundMessage } from './protocol.ts';
+import type { InboundMessage, ImagePayload } from './protocol.ts';
 
 export interface ModuleTool extends ManifestTool {
   moduleId: string;
@@ -52,8 +52,10 @@ export class ModuleRegistry {
   }
 
   private envFor(manifest: Manifest): { env: Record<string, string>; missing: string[] } {
-    const env: Record<string, string> = { NODE_ENV: process.env['NODE_ENV'] ?? 'production', TZ: process.env['TZ'] ?? '', LANG: process.env['LANG'] ?? 'C.UTF-8' };
+    const env: Record<string, string> = { NODE_ENV: process.env['NODE_ENV'] ?? 'production', TZ: process.env['TZ'] || 'UTC', LANG: process.env['LANG'] ?? 'C.UTF-8' };
     const missing: string[] = [];
+    // 하위 프로세스를 띄우는 모듈(화면 제어 등)은 프로그램을 찾을 수 있게 PATH 를 받습니다. 비밀값이 아닙니다.
+    if (manifest.permissions.childProcess && process.env['PATH']) env['PATH'] = process.env['PATH'];
     for (const e of manifest.env) {
       const v = process.env[e.name];
       if (v && v.trim() !== '') env[e.name] = v;
@@ -111,7 +113,7 @@ export class ModuleRegistry {
             origin: 'builtin',
             dir,
             manifest,
-            enabled: prev ? prev.enabled : true,
+            enabled: prev ? prev.enabled : manifest.defaultEnabled,
             status: manifest.channel ? 'stopped' : 'idle',
             statusDetail: null,
             createdBy: null,
@@ -181,6 +183,19 @@ export class ModuleRegistry {
     const out = await this.host(moduleId).call(tool, input, meta);
     const max = 262_144;
     return out.length > max ? `${out.slice(0, max)}\n…(출력이 ${max}자를 넘어 잘랐습니다)` : out;
+  }
+
+  /** 에이전트에 연결된 화면 제어 모듈 (켜져 있고 승인된 것 하나) */
+  computerFor(agentId: string): ModuleRow | null {
+    for (const link of this.store.listAgentModules(agentId)) {
+      const m = this.store.findModule(link.moduleId);
+      if (m && m.manifest.computer && m.enabled && m.status !== 'pending' && m.status !== 'rejected') return m;
+    }
+    return null;
+  }
+
+  computer(moduleId: string, action: string, input: unknown, timeoutMs: number): Promise<{ output: string; image: ImagePayload | null }> {
+    return this.host(moduleId).computer(action, input, timeoutMs);
   }
 
   async send(moduleId: string, target: string, text: string): Promise<string> {
@@ -274,7 +289,8 @@ export class ModuleRegistry {
     const host = this.host(id);
     host.update(this.store.getModule(id));
     if (!enabled) await host.stop('user');
-    else if (row.manifest.channel) {
+    else if (row.manifest.channel || row.manifest.computer) {
+      // 화면 제어 모듈은 켜는 순간 운영체제 권한(손쉬운 사용 등)을 확인해 문제가 있으면 바로 보여 줍니다.
       host.resetCrashes();
       await host.start().catch((err: Error) => this.log.warn('모듈을 켰지만 시작하지 못했습니다', { id, error: err.message }));
     }
@@ -287,7 +303,8 @@ export class ModuleRegistry {
     host.update(this.store.getModule(id));
     host.resetCrashes();
     await host.stop('user');
-    if (host.isChannel) await host.start();
+    // 화면 제어 모듈도 바로 띄워 운영체제 권한(손쉬운 사용 등)을 다시 확인합니다.
+    if (host.isChannel || this.store.getModule(id).manifest.computer) await host.start();
     return this.store.getModule(id);
   }
 

@@ -12,7 +12,8 @@
     "server",
     "web",
     "modules/discord",
-    "modules/telegram"
+    "modules/telegram",
+    "modules/email"
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",

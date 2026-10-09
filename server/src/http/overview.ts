@@ -1,6 +1,8 @@
 import type { App } from '../app.ts';
+import os from 'node:os';
 import type { AgentRow, ModuleRow } from '../db/store.ts';
 import { dayKey } from '../limits/limits.ts';
+import { displayPath } from '../permissions/folders.ts';
 
 export const BUILTIN_NODES = [
   { id: 'builtin:web', label: '웹 검색', tools: ['web_search', 'web_fetch'], permissions: ['web.search', 'net.fetch'] },
@@ -25,6 +27,11 @@ function moduleView(app: App, m: ModuleRow, agentsById: Map<string, AgentRow>) {
     status: app.registry.liveStatus(m.id),
     statusDetail: m.statusDetail,
     channel: m.manifest.channel !== null,
+    /** 메시지를 보낼 수 있는 채널인지 (받기만 하는 이메일 등은 false) */
+    canSend: m.manifest.channel !== null && m.manifest.channel.send !== false,
+    /** 화면 제어 모듈인지, 지금 화면을 쓰는 에이전트 */
+    computer: m.manifest.computer !== null,
+    screenHolder: m.manifest.computer ? (app.manager.screenLocks.holder(m.id) ?? null) : null,
     tools: m.manifest.tools.map((t) => ({ name: t.name, title: t.title ?? t.name })),
     env: m.manifest.env.map((e) => ({ name: e.name, required: e.required, present: Boolean(process.env[e.name]?.trim()) })),
     permissions: m.manifest.permissions,
@@ -39,6 +46,7 @@ function moduleView(app: App, m: ModuleRow, agentsById: Map<string, AgentRow>) {
 export function buildOverview(app: App) {
   const tz = process.env['TZ'] || 'UTC';
   const day = dayKey(new Date(), tz);
+  const home = os.homedir();
   const agents = app.store.listAgents();
   const agentsById = new Map(agents.map((a) => [a.id, a]));
   const links = app.store.listAgentModules();
@@ -67,14 +75,21 @@ export function buildOverview(app: App) {
       tokenLimit: a.limits.tokensPerDay,
       limits: a.limits,
       links: links.filter((l) => l.agentId === a.id).map((l) => ({ moduleId: l.moduleId, targets: l.config.targets ?? [], trigger: l.config.trigger ?? 'direct' })),
+      delegation: a.delegation,
+      heartbeat: a.heartbeat ? { ...a.heartbeat, lastAt: a.heartbeatLastAt } : null,
+      report: a.report,
+      /** 허용 폴더 (화면에는 홈을 ~ 로 줄인 경로) */
+      folders: a.folders.map((f) => ({ path: displayPath(f.path, home), mode: f.mode })),
     };
   });
 
-  const edges: { from: string; to: string; kind: 'message' | 'skill' | 'new' | 'creating' }[] = [];
+  const edges: { from: string; to: string; kind: 'message' | 'skill' | 'new' | 'creating' | 'delegate' | 'delegating' }[] = [];
   for (const l of links) {
     const m = modules.find((x) => x.id === l.moduleId);
     if (!m) continue;
-    if (m.kind === 'module') edges.push({ from: `module:${m.id}`, to: l.agentId, kind: 'message' });
+    // 화면 제어 모듈은 에이전트가 쓰는 도구라 스킬처럼 에이전트 → 모듈 방향으로 잇습니다.
+    if (m.kind === 'module' && m.manifest.computer) edges.push({ from: l.agentId, to: `module:${m.id}`, kind: 'skill' });
+    else if (m.kind === 'module') edges.push({ from: `module:${m.id}`, to: l.agentId, kind: 'message' });
     else edges.push({ from: l.agentId, to: `skill:${m.id}`, kind: Date.now() - m.installedAt < NEW_SKILL_MS && m.createdBy === l.agentId ? 'new' : 'skill' });
   }
   for (const m of modules) {
@@ -84,6 +99,14 @@ export function buildOverview(app: App) {
     for (const n of BUILTIN_NODES) {
       if (n.permissions.some((p) => (a.permissions[p]?.mode ?? 'ask') !== 'deny')) edges.push({ from: a.id, to: n.id, kind: 'skill' });
     }
+  }
+  // 위임: 상위 에이전트 관계(점선)와 지금 진행 중인 위임(움직이는 선)
+  const ids = new Set(agents.map((a) => a.id));
+  for (const a of agents) {
+    if (a.delegation.supervisorId && ids.has(a.delegation.supervisorId)) edges.push({ from: a.id, to: a.delegation.supervisorId, kind: 'delegate' });
+  }
+  for (const d of app.store.activeDelegations()) {
+    if (ids.has(d.from) && ids.has(d.to)) edges.push({ from: d.from, to: d.to, kind: 'delegating' });
   }
 
   return {

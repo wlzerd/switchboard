@@ -19,8 +19,10 @@ import { Icon } from '../components/Icon';
 import { shortModel } from '../components/Shell';
 import { Avatar, ModuleIcon, Seg, StatusLine, Steps } from '../components/ui';
 import { api, errorText } from '../lib/api';
+import { delegationChips, intervalLabel } from '../lib/autonomy';
+import { MODE_LABEL } from '../lib/folders';
 import { clock, compactTokens, percent, relTime } from '../lib/format';
-import { layoutGraph, relatedTo, type LayoutEdge } from '../lib/graph';
+import { arcPath, layoutGraph, relatedTo, type LayoutEdge } from '../lib/graph';
 import { navigate } from '../lib/router';
 import { toast, useApp } from '../lib/store';
 import type { ActivityItem, AgentView, ModuleView, Overview } from '../lib/types';
@@ -62,9 +64,10 @@ function usePrefersReducedMotion(): boolean {
 
 /* ───────── 노드 ───────── */
 
-type AgentData = { agent: AgentView; selected: boolean; dim: boolean; delay: number };
+type AgentData = { agent: AgentView; selected: boolean; dim: boolean; delay: number; dlg: boolean };
 type ModuleData = { module: ModuleView; dim: boolean; delay: number };
 type SkillData = { skill: ModuleView | null; label: string; icon: string; dim: boolean; delay: number };
+type ScreenData = { module: ModuleView; dim: boolean; delay: number };
 
 function progressOf(a: AgentView): { pct: number | null; done: number; total: number } {
   const steps = a.task?.steps ?? [];
@@ -88,6 +91,11 @@ function AgentNode({ data }: NodeProps<Node<AgentData, 'agent'>>) {
         <span className="title" style={{ fontSize: 15, fontWeight: 700 }}>
           {a.name}
         </span>
+        {a.heartbeat?.enabled ? (
+          <span className="hb-mark" title={`하트비트 · ${intervalLabel(a.heartbeat.everyMinutes)}마다`}>
+            <Icon name="pulse" size={13} stroke={2.2} />
+          </span>
+        ) : null}
         <span className="model-chip">{shortModel(a.model, a.modelName)}</span>
       </span>
       <StatusLine status={status} detail={busy && p.total > 1 ? `${p.done}/${p.total} 단계` : a.queued > 0 ? `대기열 ${a.queued}` : null} />
@@ -98,6 +106,9 @@ function AgentNode({ data }: NodeProps<Node<AgentData, 'agent'>>) {
         <span style={{ width }} />
       </span>
       <Handle type="source" position={Position.Right} className="gh skill" isConnectable={false} />
+      {/* 위임 선(에이전트 ↔ 에이전트)은 오른쪽 위에서 나가고 들어옵니다. 기본 선과 겹치지 않게 아래에 둡니다. */}
+      <Handle type="source" id="dlg-out" position={Position.Right} className="gh dlg" style={{ top: 22, opacity: data.dlg ? 1 : 0 }} isConnectable={false} />
+      <Handle type="target" id="dlg-in" position={Position.Right} className="gh dlg" style={{ top: 22, opacity: data.dlg ? 1 : 0 }} isConnectable={false} />
     </div>
   );
 }
@@ -160,16 +171,59 @@ function SkillNode({ data }: NodeProps<Node<SkillData, 'skill'>>) {
   );
 }
 
+/** 화면 제어 모듈: 지금 화면을 쓰는 에이전트가 있으면 이름과 함께 살아 있는 점을 보여 줍니다. */
+function ScreenNode({ data }: NodeProps<Node<ScreenData, 'screen'>>) {
+  const m = data.module;
+  const holder = m.screenHolder;
+  const failed = m.status === 'failed' || m.status === 'crashed';
+  const sub = holder ? `${holder.agentName} 사용 중` : !m.enabled ? '꺼짐' : failed ? '시작 실패' : m.status === 'running' ? '준비됨' : '대기';
+  return (
+    <div className={`gnode${failed ? ' failed' : ''}`} style={{ position: 'relative', width: 200, height: 54, opacity: data.dim ? 0.38 : m.enabled ? 1 : 0.6, animationDelay: `${data.delay}s` }} title={m.statusDetail ?? undefined}>
+      <Handle type="target" position={Position.Left} className="gh skill" isConnectable={false} />
+      <span className="tile" style={{ width: 26, height: 26, borderRadius: 7, background: 'var(--skill-dim)', color: 'var(--skill)' }}>
+        <Icon name="screen" size={15} stroke={1.9} />
+      </span>
+      <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.25 }}>
+        <span className="title">{m.name}</span>
+        <span className="sub" style={{ color: failed ? 'var(--danger)' : holder ? 'var(--skill)' : undefined }}>
+          {sub}
+        </span>
+      </span>
+      {holder ? <span className="status-dot working" style={{ marginLeft: 'auto', flex: 'none' }} /> : null}
+    </div>
+  );
+}
+
 const BUILTIN_ICON: Record<string, string> = { 'builtin:web': 'globe', 'builtin:http': 'link', 'builtin:shell': 'terminal', 'builtin:fs': 'folder' };
 
 /* ───────── 선 ───────── */
 
 type FlowData = { kind: LayoutEdge['kind']; flow: 'forward' | 'reverse' | null; particle: boolean; dim: boolean; flipped: boolean; builtin: boolean };
 
+function DelegationEdge({ path, kind, flow, particle, dim }: { path: string; kind: 'delegate' | 'delegating'; flow: FlowData['flow']; particle: boolean; dim: boolean }) {
+  const color = 'var(--text2)';
+  // 진행 중인 위임은 늘 흐르고, 결과가 돌아올 때(반대 방향 펄스)는 거꾸로 흐릅니다.
+  const dir = kind === 'delegating' ? (flow === 'reverse' ? 'reverse' : 'forward') : flow;
+  return (
+    <g style={{ opacity: dim ? 0.14 : 1, transition: 'opacity .3s ease' }}>
+      <path d={path} className="edge-base" style={{ stroke: color, strokeWidth: 1.6, strokeOpacity: kind === 'delegate' ? 0.5 : 0.3, strokeDasharray: kind === 'delegate' ? '4 5' : undefined }} />
+      {dir ? <path d={path} className="edge-flow" style={{ stroke: color, strokeWidth: 2, animationDirection: dir === 'reverse' ? 'reverse' : 'normal' }} /> : null}
+      {dir && particle ? (
+        <circle r={3.5} style={{ fill: color, filter: `drop-shadow(0 0 5px ${color})` }}>
+          <animateMotion dur="1.6s" repeatCount="indefinite" path={path} keyPoints={dir === 'reverse' ? '1;0' : '0;1'} keyTimes="0;1" calcMode="linear" />
+        </circle>
+      ) : null}
+    </g>
+  );
+}
+
 function FlowEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<Edge<FlowData, 'flow'>>) {
-  const [path] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   const kind = data?.kind ?? 'skill';
   const flow = data?.flow ?? null;
+  if (kind === 'delegate' || kind === 'delegating') {
+    return <DelegationEdge path={arcPath(sourceX, sourceY, targetX, targetY)} kind={kind} flow={flow} particle={data?.particle ?? false} dim={data?.dim ?? false} />;
+  }
+  const [path] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   const color = kind === 'message' ? 'var(--msg)' : kind === 'skill' ? 'var(--skill)' : 'var(--accent)';
   // 내장 도구로 가는 선은 에이전트마다 여러 개라 흐리게 두고, 쓰는 순간(flow)에만 또렷하게 그립니다.
   const baseOpacity = kind === 'new' ? 1 : kind === 'creating' ? 0 : flow ? 0.3 : data?.builtin ? 0.16 : 0.45;
@@ -195,7 +249,7 @@ function LabelNode({ data }: NodeProps<Node<{ text: string }, 'label'>>) {
   return <div className="col-label">{data.text}</div>;
 }
 
-const nodeTypes = { agent: AgentNode, module: ModuleNode, skill: SkillNode, label: LabelNode };
+const nodeTypes = { agent: AgentNode, module: ModuleNode, skill: SkillNode, screen: ScreenNode, label: LabelNode };
 const edgeTypes = { flow: FlowEdge };
 
 /* ───────── 그래프 ───────── */
@@ -249,6 +303,15 @@ function Graph({ overview, selected, onSelect }: { overview: Overview; selected:
 
   const layout = useMemo(() => layoutGraph(overview, positions), [overview, positions]);
   const related = useMemo(() => relatedTo(selected, layout.edges), [selected, layout.edges]);
+  const delegating = useMemo(() => {
+    const ids = new Set<string>();
+    for (const e of layout.edges) {
+      if (e.kind !== 'delegate' && e.kind !== 'delegating') continue;
+      ids.add(e.source);
+      ids.add(e.target);
+    }
+    return ids;
+  }, [layout.edges]);
 
   const nodes: Node[] = useMemo(
     () =>
@@ -258,11 +321,15 @@ function Graph({ overview, selected, onSelect }: { overview: Overview; selected:
         const base = { id: n.id, position: { x: n.x, y: n.y }, measured: measured[n.id] };
         if (n.kind === 'agent') {
           const agent = overview.agents.find((a) => a.id === n.ref) as AgentView;
-          return { ...base, type: 'agent', data: { agent, selected: selected === n.id, dim, delay } satisfies AgentData };
+          return { ...base, type: 'agent', data: { agent, selected: selected === n.id, dim, delay, dlg: delegating.has(n.id) } satisfies AgentData };
         }
         if (n.kind === 'module') {
           const module = overview.modules.find((m) => m.id === n.ref) as ModuleView;
           return { ...base, type: 'module', data: { module, dim, delay } satisfies ModuleData };
+        }
+        if (n.kind === 'screen') {
+          const module = overview.modules.find((m) => m.id === n.ref) as ModuleView;
+          return { ...base, type: 'screen', data: { module, dim, delay } satisfies ScreenData };
         }
         if (n.kind === 'skill') {
           const skill = overview.skills.find((m) => m.id === n.ref) ?? null;
@@ -271,15 +338,19 @@ function Graph({ overview, selected, onSelect }: { overview: Overview; selected:
         const b = overview.builtinNodes.find((x) => x.id === n.ref);
         return { ...base, type: 'skill', data: { skill: null, label: b?.label ?? n.ref, icon: BUILTIN_ICON[n.ref] ?? 'cube', dim, delay } satisfies SkillData };
       }),
-    [layout.nodes, overview, related, selected, measured],
+    [layout.nodes, overview, related, selected, measured, delegating],
   );
 
   // 각 줄 맨 위에 붙는 이름표. 그래프와 함께 움직이고 확대됩니다.
   const labels: Node[] = useMemo(() => {
     const groups: { id: string; text: string; kinds: string[] }[] = [
-      { id: 'label:module', text: `모듈 ${overview.modules.length}`, kinds: ['module'] },
+      { id: 'label:module', text: `모듈 ${layout.nodes.filter((n) => n.kind === 'module').length}`, kinds: ['module'] },
       { id: 'label:agent', text: `에이전트 ${overview.agents.length}`, kinds: ['agent'] },
-      { id: 'label:skill', text: `스킬 ${overview.skills.length} · 내장 도구 ${layout.nodes.filter((n) => n.kind === 'builtin').length}`, kinds: ['skill', 'builtin'] },
+      {
+        id: 'label:skill',
+        text: `스킬 ${overview.skills.length} · 내장 도구 ${layout.nodes.filter((n) => n.kind === 'builtin').length}${layout.nodes.some((n) => n.kind === 'screen') ? ` · 화면 ${layout.nodes.filter((n) => n.kind === 'screen').length}` : ''}`,
+        kinds: ['skill', 'builtin', 'screen'],
+      },
     ];
     const out: Node[] = [];
     for (const g of groups) {
@@ -290,7 +361,7 @@ function Graph({ overview, selected, onSelect }: { overview: Overview; selected:
       out.push({ id: g.id, type: 'label', position: { x, y }, data: { text: g.text }, draggable: false, selectable: false, focusable: false, measured: measured[g.id] });
     }
     return out;
-  }, [layout.nodes, overview.modules.length, overview.agents.length, overview.skills.length, measured]);
+  }, [layout.nodes, overview.agents.length, overview.skills.length, measured]);
   const allNodes = useMemo(() => [...labels, ...nodes], [labels, nodes]);
 
   // 상세 패널이 열리고 닫히거나 창 크기가 바뀌어 그래프 영역 폭이 달라지면 다시 화면에 맞춥니다.
@@ -314,20 +385,24 @@ function Graph({ overview, selected, onSelect }: { overview: Overview; selected:
     };
   }, [rf]);
 
+  // 왼쪽 줄 모듈(채널 등). 화면 제어 모듈은 오른쪽 줄이라 뒤집지 않습니다.
+  const leftModules = useMemo(() => new Set(layout.nodes.filter((n) => n.kind === 'module').map((n) => n.id)), [layout.nodes]);
   const edges: Edge[] = useMemo(
     () =>
       layout.edges.map((e): Edge => {
+        const between = e.kind === 'delegate' || e.kind === 'delegating';
         // 모듈은 왼쪽 줄에 있으므로 모듈로 들어가는 선은 모듈 → 에이전트 방향으로 그립니다.
-        const flipped = e.target.startsWith('module:');
+        const flipped = !between && leftModules.has(e.target);
         const source = flipped ? e.target : e.source;
         const target = flipped ? e.source : e.target;
         const fwd = pulses[`${source}->${target}`] ?? 0;
         const rev = pulses[`${target}->${source}`] ?? 0;
         const flow = fwd === 0 && rev === 0 ? null : fwd >= rev ? 'forward' : 'reverse';
         const dim = selected !== null && e.source !== selected && e.target !== selected;
-        return { id: e.id, source, target, type: 'flow', data: { kind: e.kind, flow, particle, dim, flipped, builtin: target.startsWith('builtin:') } satisfies FlowData };
+        const handles = between ? { sourceHandle: 'dlg-out', targetHandle: 'dlg-in' } : {};
+        return { id: e.id, source, target, ...handles, type: 'flow', data: { kind: e.kind, flow, particle, dim, flipped, builtin: target.startsWith('builtin:') } satisfies FlowData };
       }),
-    [layout.edges, pulses, selected, particle],
+    [layout.edges, pulses, selected, particle, leftModules],
   );
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
@@ -390,8 +465,12 @@ function Inspector({ agent, overview, onClose }: { agent: AgentView; overview: O
   const live = agent.task !== null && (agent.task.status === 'running' || agent.task.status === 'waiting' || agent.task.status === 'queued');
   const skills = overview.edges.filter((e) => e.from === agent.id && (e.to.startsWith('skill:') || e.to.startsWith('builtin:')));
   const modules = agent.links.map((l) => overview.modules.find((m) => m.id === l.moduleId)).filter((m): m is ModuleView => m !== undefined && m.kind === 'module');
+  const screenInUse = overview.modules.find((m) => m.screenHolder?.agentId === agent.id);
   const creating = overview.edges.filter((e) => e.from === agent.id && e.kind === 'creating');
   const used = percent(agent.tokensToday, agent.tokenLimit);
+  const nameOf = (id: string): string => overview.agents.find((a) => a.id === id)?.name ?? '삭제된 에이전트';
+  const handing = overview.edges.filter((e) => e.kind === 'delegating' && (e.from === agent.id || e.to === agent.id));
+  const hb = agent.heartbeat;
 
   const togglePause = async (): Promise<void> => {
     setBusy(true);
@@ -465,10 +544,58 @@ function Inspector({ agent, overview, onClose }: { agent: AgentView; overview: O
         <div className="chips">
           {modules.length === 0 ? <span className="muted">없음</span> : null}
           {modules.map((m) => (
-            <span key={m.id} className="chip msg">
+            <span key={m.id} className={`chip ${m.computer ? 'skill' : 'msg'}`}>
+              {m.computer ? <Icon name="screen" size={11} stroke={2.2} /> : null}
               {m.name}
+              {screenInUse?.id === m.id ? ' · 사용 중' : ''}
             </span>
           ))}
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <span className="section-label">위임</span>
+        <div className="chips">
+          {delegationChips(agent.delegation, overview.agents).map((c) => (
+            <span key={c} className="chip">
+              {c}
+            </span>
+          ))}
+          {handing.map((e) => (
+            <span key={`${e.from}->${e.to}`} className="chip new">
+              <Icon name="forward" size={11} stroke={2.4} />
+              {e.from === agent.id ? `${nameOf(e.to)}에게 맡김` : `${nameOf(e.from)}의 일 처리 중`}
+            </span>
+          ))}
+        </div>
+      </div>
+      {agent.folders.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <span className="section-label">허용 폴더</span>
+          <div className="chips">
+            {agent.folders.map((f) => (
+              <span key={f.path} className={`chip mono${f.mode === 'write' ? ' new' : ''}`} title={MODE_LABEL[f.mode]}>
+                <Icon name="folder" size={11} stroke={2.2} />
+                {f.path}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <span className="section-label">하트비트</span>
+        <div className="chips">
+          {hb?.enabled ? (
+            <>
+              <span className="chip new">
+                <Icon name="pulse" size={11} stroke={2.4} />
+                {intervalLabel(hb.everyMinutes)}마다
+              </span>
+              {hb.activeHours ? <span className="chip mono">{hb.activeHours}</span> : null}
+              <span className="chip">{hb.lastAt ? `마지막 ${relTime(hb.lastAt)}` : '아직 안 돎'}</span>
+            </>
+          ) : (
+            <span className="muted">꺼짐</span>
+          )}
         </div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -540,10 +667,10 @@ function Activity() {
   );
 }
 
-function LegendLine({ color, glow }: { color: string; glow?: boolean }) {
+function LegendLine({ color, glow, dashed }: { color: string; glow?: boolean; dashed?: boolean }) {
   return (
     <svg width="26" height="8" aria-hidden="true">
-      <path d="M1 4H25" className={glow ? undefined : 'edge-flow'} style={{ stroke: color, strokeWidth: 2, filter: glow ? 'drop-shadow(0 0 3px var(--accent-glow))' : undefined }} />
+      <path d="M1 4H25" className={glow || dashed ? undefined : 'edge-flow'} style={{ stroke: color, strokeWidth: 2, strokeDasharray: dashed ? '4 4' : undefined, filter: glow ? 'drop-shadow(0 0 3px var(--accent-glow))' : undefined }} />
     </svg>
   );
 }
@@ -578,6 +705,10 @@ export function CanvasPage() {
           </span>
           <span>
             <LegendLine color="var(--accent)" glow />새 스킬
+          </span>
+          <span>
+            <LegendLine color="var(--text2)" dashed />
+            위임
           </span>
         </div>
         <button type="button" className="btn primary" onClick={() => navigate('/hire')}>

@@ -1,0 +1,12 @@
+{
+  "name": "@switchboard/module-email",
+  "version": "1.0.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "imapflow": "^2.3.0",
+    "mailparser": "^3.9.37"
+  }
+}

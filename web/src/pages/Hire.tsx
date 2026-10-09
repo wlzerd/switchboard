@@ -1,17 +1,20 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { ColorPicker } from '../components/AgentEdit';
+import { DelegationEditor } from '../components/Delegation';
 import { Icon } from '../components/Icon';
 import { EffortPicker, ModelPicker } from '../components/ModelPicker';
 import { Avatar, ChipInput, ModuleIcon, Seg, Switch } from '../components/ui';
 import { AGENT_COLORS, agentNameProblem, EFFORT_LABEL, NAME_MAX, nextFreeName } from '../lib/agent';
 import { api, ApiError, errorText } from '../lib/api';
+import { DEFAULT_DELEGATION, delegationChips } from '../lib/autonomy';
 import { compactTokens } from '../lib/format';
 import { navigate } from '../lib/router';
 import { refreshOverview, useApp } from '../lib/store';
-import type { Effort, Meta, Mode, ModelInfo, ModuleView, Overview } from '../lib/types';
+import type { DelegationSettings, Effort, Meta, Mode, ModelInfo, ModuleView, Overview } from '../lib/types';
 
-const STEPS = ['이름', 'API 키', '모델', '권한', '연결'] as const;
-type StepIndex = 0 | 1 | 2 | 3 | 4;
+const STEPS = ['이름', 'API 키', '모델', '권한', '위임', '연결'] as const;
+type StepIndex = 0 | 1 | 2 | 3 | 4 | 5;
+const LAST: StepIndex = 5;
 
 type Stage = 'format' | 'auth' | 'models';
 const STAGES: Stage[] = ['format', 'auth', 'models'];
@@ -62,7 +65,8 @@ function stepOfError(code: string): StepIndex {
   if (code === 'agent_key' || code.startsWith('key_') || code === 'api_key_not_found' || code === 'env_key_missing') return 1;
   if (code.startsWith('agent_model') || code.startsWith('agent_effort')) return 2;
   if (code === 'agent_preset') return 3;
-  return 4;
+  if (code.startsWith('delegation_')) return 4;
+  return LAST;
 }
 
 function Section({ index, open, done, title, summary, onEdit, children }: { index: number; open: boolean; done: boolean; title: string; summary: ReactNode; onEdit: () => void; children: ReactNode }) {
@@ -284,7 +288,8 @@ function moduleSub(m: ModuleView): string {
   if (!m.enabled) return '꺼짐 · 모듈 화면에서 켤 수 있음';
   if (m.status === 'failed' || m.status === 'crashed') return m.statusDetail ?? '오류';
   if (m.kind === 'skill') return m.tools.map((t) => t.name).join(', ');
-  return m.channel ? '채널' : m.description;
+  if (m.computer) return '화면 제어';
+  return m.channel ? (m.canSend ? '채널' : '받기 전용') : m.description;
 }
 
 function LinkStep({ modules, links, onChange }: { modules: ModuleView[]; links: Record<string, Link>; onChange: (next: Record<string, Link>) => void }) {
@@ -316,7 +321,7 @@ function LinkStep({ modules, links, onChange }: { modules: ModuleView[]; links: 
                 <Switch checked={Boolean(link)} label={`${m.name} 연결`} onChange={(on) => set(m.id, on ? { targets: [], trigger: 'direct' } : null)} />
               </span>
             </div>
-            {link && m.channel ? (
+            {link && m.canSend ? (
               <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, paddingLeft: 44, animation: 'rise .25s ease backwards' }}>
                 <ChipInput value={link.targets} onChange={(targets) => set(m.id, { ...link, targets })} label={`${m.name} 대상`} placeholder="모든 대화 · #채널 또는 ID" />
                 <Seg
@@ -341,7 +346,7 @@ export function HirePage() {
   const overview = useApp((s) => s.overview) as Overview;
   const meta = useApp((s) => s.meta) as Meta;
   const [step, setStep] = useState<StepIndex>(0);
-  const [done, setDone] = useState<boolean[]>([false, false, false, false, false]);
+  const [done, setDone] = useState<boolean[]>([false, false, false, false, false, false]);
 
   const [name, setName] = useState('');
   const [color, setColor] = useState<string>(() => AGENT_COLORS[overview.agents.length % AGENT_COLORS.length] ?? AGENT_COLORS[0]);
@@ -353,6 +358,7 @@ export function HirePage() {
   const [effort, setEffort] = useState<Effort | null>(null);
   const [preset, setPreset] = useState<string>(() => meta.presets.find((p) => p.id === 'helper')?.id ?? meta.presets[0]?.id ?? 'helper');
   const [links, setLinks] = useState<Record<string, Link>>({});
+  const [delegation, setDelegation] = useState<DelegationSettings>(DEFAULT_DELEGATION);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<{ step: StepIndex; text: string } | null>(null);
@@ -369,7 +375,7 @@ export function HirePage() {
   const finish = (i: StepIndex): void => {
     setDone((d) => d.map((v, j) => (j === i ? true : v)));
     const next = done.findIndex((v, j) => j > i && !v);
-    setStep((next === -1 ? 4 : next) as StepIndex);
+    setStep((next === -1 ? LAST : next) as StepIndex);
     if (submitError?.step === i) setSubmitError(null);
   };
 
@@ -388,12 +394,13 @@ export function HirePage() {
           effort,
           preset,
           modules: Object.entries(links).map(([moduleId, l]) => ({ moduleId, targets: l.targets, trigger: l.trigger })),
+          delegation,
         },
       });
       setCreated({ id: r.agent.id, name: r.agent.name });
       refreshOverview(0);
     } catch (err) {
-      const at = err instanceof ApiError ? stepOfError(err.code) : 4;
+      const at = err instanceof ApiError ? stepOfError(err.code) : LAST;
       setSubmitError({ step: at, text: errorText(err) });
       setStep(at);
     } finally {
@@ -408,7 +415,7 @@ export function HirePage() {
     setNameTouched(false);
     setColor(AGENT_COLORS[(overview.agents.length + 1) % AGENT_COLORS.length] ?? AGENT_COLORS[0]);
     setStep(0);
-    setDone([false, true, true, true, true]);
+    setDone([false, true, true, true, true, true]);
   };
 
   const stepError = (i: StepIndex): ReactNode =>
@@ -432,6 +439,7 @@ export function HirePage() {
             <span className="chip mono">{info?.name ?? model}</span>
             {effort ? <span className="chip">노력 {EFFORT_LABEL[effort]}</span> : null}
             <span className="chip">{presetName}</span>
+            <span className="chip">위임 {delegationChips(delegation, overview.agents).join(' · ')}</span>
             <span className="chip msg">{linkSummary}</span>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 8 }}>
@@ -462,9 +470,9 @@ export function HirePage() {
         </button>
         <h1>새 에이전트</h1>
       </div>
-      <ol className="stepper" aria-label="단계">
+      <ol className="stepper" aria-label="단계" style={{ '--steps': STEPS.length } as CSSProperties}>
         <li className="rail" aria-hidden="true">
-          <span style={{ width: `${(Math.min(reached, 4) / 4) * 100}%` }} />
+          <span style={{ width: `${(Math.min(reached, LAST) / LAST) * 100}%` }} />
         </li>
         {STEPS.map((title, i) => (
           <li key={title}>
@@ -626,16 +634,41 @@ export function HirePage() {
         </div>
       </Section>
 
-      <Section index={4} open={step === 4} done={done[4] ?? false} title="연결" onEdit={() => setStep(4)} summary={<span>{linkSummary}</span>}>
-        <LinkStep modules={linkable} links={links} onChange={setLinks} />
+      <Section
+        index={4}
+        open={step === 4}
+        done={done[4] ?? false}
+        title="위임"
+        onEdit={() => setStep(4)}
+        summary={
+          <>
+            {delegationChips(delegation, overview.agents).map((c) => (
+              <span key={c} className="chip">
+                {c}
+              </span>
+            ))}
+          </>
+        }
+      >
+        <DelegationEditor agents={overview.agents} selfId={null} value={delegation} onChange={setDelegation} />
         {stepError(4)}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button type="button" className="btn primary" onClick={() => finish(4)}>
+            다음
+          </button>
+        </div>
+      </Section>
+
+      <Section index={LAST} open={step === LAST} done={done[LAST] ?? false} title="연결" onEdit={() => setStep(LAST)} summary={<span>{linkSummary}</span>}>
+        <LinkStep modules={linkable} links={links} onChange={setLinks} />
+        {stepError(LAST)}
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 10 }}>
-          {!done.slice(0, 4).every(Boolean) ? (
+          {!done.slice(0, LAST).every(Boolean) ? (
             <span className="muted" style={{ fontSize: 12.5 }}>
-              {STEPS.filter((_, i) => i < 4 && !done[i]).join(' · ')} 단계가 남았습니다
+              {STEPS.filter((_, i) => i < LAST && !done[i]).join(' · ')} 단계가 남았습니다
             </span>
           ) : null}
-          <button type="button" className="btn primary" style={{ height: 44, padding: '0 22px', fontSize: 15 }} disabled={submitting || !done.slice(0, 4).every(Boolean) || !key || !model || nameProblem !== null} onClick={() => void hire()}>
+          <button type="button" className="btn primary" style={{ height: 44, padding: '0 22px', fontSize: 15 }} disabled={submitting || !done.slice(0, LAST).every(Boolean) || !key || !model || nameProblem !== null} onClick={() => void hire()}>
             {submitting ? <span className="spinner" style={{ borderTopColor: 'var(--onAccent)' }} /> : null}
             고용하기
             <Icon name="arrowRight" size={16} stroke={2.4} />

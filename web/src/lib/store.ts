@@ -115,6 +115,22 @@ function handle(e: ServerEvent): void {
     case 'skill.created':
       refreshOverview();
       break;
+    case 'report': {
+      // 조용한 작업은 알릴 것이 있을 때만 이 이벤트가 옵니다.
+      const name = state.overview?.agents.find((a) => a.id === e.agentId)?.name ?? '에이전트';
+      const text = e.text.replace(/\s+/g, ' ').trim();
+      toast(`${name} 보고 · ${text.length > 140 ? `${text.slice(0, 140)}…` : text}`, 'info');
+      refreshOverview();
+      break;
+    }
+    case 'heartbeat.done': {
+      // 사용자가 '지금 확인'을 눌렀을 때만 옵니다. 보고가 있었다면 report 이벤트로 이미 알렸습니다.
+      const name = state.overview?.agents.find((a) => a.id === e.agentId)?.name ?? '에이전트';
+      if (e.error) toast(`${name} 하트비트 점검 실패 · ${e.error}`, 'error');
+      else if (!e.reported) toast(`${name} · 보고할 내용이 없습니다`, 'ok');
+      refreshOverview();
+      break;
+    }
     case 'theme.changed':
       setState({ theme: e.theme });
       break;

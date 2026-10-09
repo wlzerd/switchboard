@@ -6,7 +6,7 @@ import { clampMaxTokens, type ModelSummary } from '../anthropic/models.ts';
 import type { AnthropicService } from '../anthropic/service.ts';
 import type { Config } from '../config/env.ts';
 import { sha256 } from '../crypto/secrets.ts';
-import type { AgentRow, Store, TaskRow, TaskStep } from '../db/store.ts';
+import type { AgentRow, ReportTarget, Store, TaskRow, TaskStep } from '../db/store.ts';
 import { AnthropicCallError, AppError } from '../errors.ts';
 import type { AgentLiveStatus, EventBus } from '../events/bus.ts';
 import type { GuardState } from '../guards/guards.ts';
@@ -15,20 +15,48 @@ import type { Logger } from '../log.ts';
 import type { ModuleRegistry } from '../modules/registry.ts';
 import type { PermissionDef } from '../permissions/policy.ts';
 import { TOOL_PERMISSION } from '../tools/builtin.ts';
-import type { BuiltinTool, ToolEnv } from '../tools/types.ts';
+import type { BuiltinTool, DelegationOrigin, ToolEnv } from '../tools/types.ts';
+import { isSilentReport } from './autonomy.ts';
 import type { StepReporter, ToolExecutor } from './executor.ts';
 import { boundHistory, danglingToolResults, sanitizeFallbackContent, stripThinking, textOf, type HistoryMessage } from './history.ts';
 import { buildSystemPrompt, userHeader } from './prompt.ts';
+import { COMPUTER_TOOLSET } from './screen.ts';
+import { LiveSink, QuietSink, type TaskSink } from './sink.ts';
 
 export interface TaskInput {
   agentId: string;
-  /** 대화 스레드 키: console · <모듈 id>:<대상> · schedule:<id> */
+  /** 대화 스레드 키: console · <모듈 id>:<대상> · schedule:<id> · heartbeat · delegation:<맡긴 에이전트 id> */
   source: string;
   sourceLabel: string;
   origin: TaskRow['origin'];
   text: string;
   reply: { moduleId: string; target: string } | null;
   title?: string;
+  /** 조용한 판단: 보고할 것이 없으면 기록 · 알림 없이 끝냅니다 (하트비트, 모듈의 자동 알림) */
+  quiet?: boolean;
+  /** 조용한 작업이 보고하게 되면 대화 맨 앞에 보일 요청 요약 */
+  trigger?: string;
+  /** 조용한 작업의 보고를 보낼 곳 (없으면 웹 화면에만) */
+  reportTo?: ReportTarget | null;
+  /** 이 작업까지 일을 맡겨 온 에이전트 id 들 */
+  chain?: string[];
+  /** 다른 에이전트가 맡긴 작업이면 결과를 돌려줄 곳 */
+  delegation?: DelegationOrigin | null;
+  /** 사용자가 직접 시작한 하트비트 (보고가 없어도 끝났다는 것을 알려 줌) */
+  manual?: boolean;
+}
+
+/** 작업이 끝났을 때 AgentManager 에 알리는 내용 (위임 결과 반환 · 하트비트 알림) */
+export interface TaskEnd {
+  input: TaskInput;
+  task: TaskRow;
+  status: 'done' | 'failed' | 'cancelled';
+  finalText: string;
+  error: string | null;
+  /** 조용한 작업이 보고 없이 끝났는지 (기록을 지움) */
+  silent: boolean;
+  /** 작업 중에 다른 에이전트에게 일을 맡겨, 결과 반환 의무가 후속 작업으로 넘어갔는지 */
+  deferred: boolean;
 }
 
 export interface RuntimeDeps {
@@ -44,9 +72,12 @@ export interface RuntimeDeps {
   guardState: GuardState;
   /** 모델별 서버 도구 버전 단계: 0=최신, 1=기본, 2=사용 안 함 */
   serverToolLevel: Map<string, number>;
+  /** 화면 제어 도구 묶음을 거절한 모델 */
+  noComputer: Set<string>;
   deliver: (agent: AgentRow, env: ToolEnv, moduleId: string, target: string, text: string) => Promise<string>;
   acquireSlot: (signal: AbortSignal) => Promise<() => void>;
   onFinished: () => void;
+  onTaskEnd: (end: TaskEnd) => void;
 }
 
 type Block = Record<string, unknown> & { type?: unknown };
@@ -60,20 +91,29 @@ class StepTracker implements StepReporter {
   private readonly store: Store;
   private readonly bus: EventBus;
   private readonly taskId: string;
+  /** 조용한 작업은 보고하기로 정할 때까지 단계를 저장 · 방송하지 않습니다 */
+  private visible: boolean;
   steps: TaskStep[];
   private seq = 0;
 
-  constructor(store: Store, bus: EventBus, task: TaskRow) {
+  constructor(store: Store, bus: EventBus, task: TaskRow, visible: boolean) {
     this.store = store;
     this.bus = bus;
     this.taskId = task.id;
     this.steps = task.steps;
+    this.visible = visible;
   }
 
   private save(): void {
     if (this.steps.length > MAX_STEPS_KEPT) this.steps = this.steps.slice(-MAX_STEPS_KEPT);
+    if (!this.visible) return;
     const task = this.store.updateTask(this.taskId, { steps: this.steps });
     this.bus.emit({ type: 'task.update', task });
+  }
+
+  show(): void {
+    this.visible = true;
+    this.save();
   }
 
   add(label: string, meta: string, state: TaskStep['state']): string {
@@ -128,10 +168,13 @@ export function retryBackoffMs(attempt: number): number {
   return [2000, 8000, 30000][Math.min(attempt, 3) - 1] ?? 30000;
 }
 
+const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
+
 interface Running {
   task: TaskRow;
   threadId: string;
   abort: AbortController;
+  quiet: boolean;
 }
 
 export class AgentRuntime {
@@ -140,6 +183,8 @@ export class AgentRuntime {
   private readonly queue: { input: TaskInput; task: TaskRow }[] = [];
   private readonly running = new Map<string, Running>();
   private readonly busyThreads = new Set<string>();
+  /** 조용한 작업에서 같은 오류가 되풀이되면 처음 한 번만 보이게 합니다 */
+  private lastQuietError: string | null = null;
   status: AgentLiveStatus = 'idle';
   detail: string | null = null;
 
@@ -157,33 +202,51 @@ export class AgentRuntime {
     this.d.bus.emit({ type: 'agent.status', agentId: this.agentId, status, detail });
   }
 
+  /** 화면에 보이는(조용하지 않은) 실행 중 작업 수 */
+  private visibleRunning(): number {
+    let n = 0;
+    for (const r of this.running.values()) if (!r.quiet) n += 1;
+    return n;
+  }
+
   workspace(): string {
     const dir = path.join(this.d.config.dataDir, 'workspaces', this.agentId);
     fs.mkdirSync(dir, { recursive: true });
-    return fs.realpathSync(dir);
+    // 경로 비교(작업 폴더 · 허용 폴더)는 운영체제가 대소문자까지 푼 실제 경로로 합니다.
+    return fs.realpathSync.native(dir);
   }
 
-  /** 작업을 줄 세웁니다. 콘솔에 바로 보이도록 사용자 메시지를 먼저 타임라인에 넣습니다. */
+  /** 작업을 줄 세웁니다. 콘솔에 바로 보이도록 사용자 메시지를 먼저 타임라인에 넣습니다 (조용한 작업은 넣지 않음). */
   enqueue(input: TaskInput): TaskRow {
     const agent = this.d.store.getAgent(this.agentId);
     const thread = this.d.store.getOrCreateThread(this.agentId, input.source, input.sourceLabel);
     const title = input.title ?? input.text.replace(/\s+/g, ' ').slice(0, 60);
-    const task = this.d.store.insertTask({ agentId: this.agentId, threadId: thread.id, title, origin: input.origin });
-    const item = this.d.store.addTimeline(thread.id, task.id, 'user', { text: input.text, src: input.sourceLabel });
-    this.d.bus.emit({ type: 'timeline.add', agentId: this.agentId, item });
-    this.d.bus.emit({ type: 'task.update', task });
+    const quiet = input.quiet === true;
+    const task = this.d.store.insertTask({ agentId: this.agentId, threadId: thread.id, title, origin: input.origin, quiet, delegatedBy: input.delegation?.fromAgentId ?? null });
+    if (!quiet) {
+      const item = this.d.store.addTimeline(thread.id, task.id, 'user', { text: input.text, src: input.sourceLabel });
+      this.d.bus.emit({ type: 'timeline.add', agentId: this.agentId, item });
+      this.d.bus.emit({ type: 'task.update', task });
+    }
     this.queue.push({ input, task });
-    if (agent.paused) this.setStatus('paused', `대기열 ${this.queue.length}건`);
+    if (agent.paused && !quiet) this.setStatus('paused', `대기열 ${this.queued().length}건`);
     this.pump();
     return task;
   }
 
+  /** 화면에 보이는 대기 작업 */
   queued(): TaskRow[] {
-    return this.queue.map((q) => q.task);
+    return this.queue.filter((q) => q.input.quiet !== true).map((q) => q.task);
   }
 
+  /** 화면에 보이는 실행 중 작업 */
   runningTasks(): TaskRow[] {
-    return [...this.running.values()].map((r) => r.task);
+    return [...this.running.values()].filter((r) => !r.quiet).map((r) => r.task);
+  }
+
+  /** 조용한 작업까지 포함해 무언가 하고 있거나 기다리는지 (하트비트를 겹쳐 넣지 않기 위함) */
+  busy(): boolean {
+    return this.running.size > 0 || this.queue.length > 0;
   }
 
   /** 대기열에서 시작할 수 있는 작업을 꺼내 실행합니다 (같은 대화는 하나씩, 에이전트 동시 작업 한도까지). */
@@ -199,10 +262,21 @@ export class AgentRuntime {
       }
       this.queue.splice(i, 1);
       const abort = new AbortController();
-      this.running.set(item.task.id, { task: item.task, threadId: item.task.threadId, abort });
+      this.running.set(item.task.id, { task: item.task, threadId: item.task.threadId, abort, quiet: item.input.quiet === true });
       this.busyThreads.add(item.task.threadId);
       void this.runWithSlot(item.input, item.task, abort);
     }
+  }
+
+  /** 시작 전에 취소된 작업 정리: 조용한 작업은 흔적 없이 지우고, 위임 결과를 기다리는 쪽에는 취소를 알립니다. */
+  private dropQueued(q: { input: TaskInput; task: TaskRow }, reason: string): void {
+    let task = q.task;
+    if (q.input.quiet === true) this.d.store.deleteTask(task.id);
+    else {
+      task = this.d.store.updateTask(task.id, { status: 'cancelled', finishedAt: Date.now(), error: reason });
+      this.d.bus.emit({ type: 'task.update', task });
+    }
+    this.d.onTaskEnd({ input: q.input, task, status: 'cancelled', finalText: '', error: reason, silent: q.input.quiet === true, deferred: false });
   }
 
   cancel(taskId: string): boolean {
@@ -214,25 +288,19 @@ export class AgentRuntime {
     const idx = this.queue.findIndex((q) => q.task.id === taskId);
     if (idx === -1) return false;
     const [q] = this.queue.splice(idx, 1);
-    if (q) {
-      const task = this.d.store.updateTask(q.task.id, { status: 'cancelled', finishedAt: Date.now(), error: '시작 전에 취소했습니다.' });
-      this.d.bus.emit({ type: 'task.update', task });
-    }
+    if (q) this.dropQueued(q, '시작 전에 취소했습니다.');
     return true;
   }
 
   cancelAll(reason: string): void {
     for (const r of this.running.values()) r.abort.abort();
-    for (const q of this.queue.splice(0)) {
-      const task = this.d.store.updateTask(q.task.id, { status: 'cancelled', finishedAt: Date.now(), error: reason });
-      this.d.bus.emit({ type: 'task.update', task });
-    }
+    for (const q of this.queue.splice(0)) this.dropQueued(q, reason);
   }
 
   onPauseChanged(paused: boolean): void {
-    if (paused) this.setStatus('paused', this.queue.length > 0 ? `대기열 ${this.queue.length}건` : null);
+    if (paused) this.setStatus('paused', this.queued().length > 0 ? `대기열 ${this.queued().length}건` : null);
     else {
-      this.setStatus(this.running.size > 0 ? 'working' : 'idle', null);
+      this.setStatus(this.visibleRunning() > 0 ? 'working' : 'idle', null);
       this.pump();
     }
   }
@@ -247,20 +315,24 @@ export class AgentRuntime {
       this.running.delete(task.id);
       this.busyThreads.delete(task.threadId);
       this.d.guardState.endTask(task.id);
-      if (this.running.size === 0 && this.status === 'working') this.setStatus('idle', null);
+      if (this.visibleRunning() === 0 && this.status === 'working') this.setStatus('idle', null);
       this.pump();
       this.d.onFinished();
     }
   }
 
   /** 도구 목록: 권한이 모두 차단인 내장 도구는 빼고, 연결된 모듈·스킬 도구를 더합니다. 이름순으로 고정해 캐시를 지킵니다. */
-  private buildTools(agent: AgentRow, model: ModelSummary | null, level: number): { tools: unknown[]; hadServer: boolean } {
-    const hasChannel = this.d.store.listAgentModules(agent.id).some((l) => this.d.store.findModule(l.moduleId)?.manifest.channel);
+  private buildTools(agent: AgentRow, model: ModelSummary | null, level: number, quiet: boolean): { tools: unknown[]; hadServer: boolean; hadComputer: boolean } {
+    const hasChannel = this.d.store.listAgentModules(agent.id).some((l) => {
+      const ch = this.d.store.findModule(l.moduleId)?.manifest.channel;
+      return Boolean(ch) && ch?.send !== false;
+    });
     const custom: { name: string; description: string; input_schema: Record<string, unknown>; eager_input_streaming: true }[] = [];
     for (const t of this.d.builtins) {
       const keys = TOOL_PERMISSION[t.name] ?? [];
       if (t.name === 'send_message' && !hasChannel) continue;
       if (t.name === 'schedule_list' && agent.permissions['schedule.create']?.mode === 'deny') continue;
+      if (t.name === 'delegate_task' && !agent.delegation.send) continue;
       if (keys.length > 0 && keys.every((k) => (agent.permissions[k]?.mode ?? 'ask') === 'deny')) continue;
       custom.push({ name: t.name, description: t.description, input_schema: t.input_schema, eager_input_streaming: true });
     }
@@ -280,21 +352,78 @@ export class AgentRuntime {
         server.push({ type: level === 0 ? 'web_fetch_20260209' : 'web_fetch_20250910', name: 'web_fetch', max_uses: 10, ...(domains.length > 0 ? { allowed_domains: domains } : {}) });
       }
     }
-    return { tools: [...custom, ...server], hadServer: server.length > 0 };
+    // 화면 제어: 연결된 화면 제어 모듈이 있고 권한이 차단이 아니며, 조용한 작업이 아닐 때만 도구 묶음을 엽니다 (요청마다 약 4,500 토큰).
+    const screen = !quiet && this.d.registry.computerFor(agent.id) !== null && (agent.permissions['screen.control']?.mode ?? 'ask') !== 'deny' && !this.d.noComputer.has(agent.model);
+    const toolset = screen ? [{ type: COMPUTER_TOOLSET }] : [];
+    return { tools: [...custom, ...server, ...toolset], hadServer: server.length > 0, hadComputer: screen };
+  }
+
+  /** 채널로 보내는 단계 (답장 · 보고 공통). 실패해도 작업은 끝내고 이유를 대화에 남깁니다. */
+  private async deliverStep(agent: AgentRow, env: ToolEnv, steps: StepTracker, to: ReportTarget, text: string, label: string, failTitle: string): Promise<void> {
+    const sendStep = steps.start(`전송 · ${label}`, '보내는 중');
+    try {
+      await this.d.deliver(agent, env, to.moduleId, to.target, text);
+      steps.end(sendStep, true, '보냄');
+    } catch (err) {
+      const message = (err as Error).message;
+      steps.end(sendStep, false, message.slice(0, 60));
+      env.sink.timeline('error', { title: failTitle, text: message });
+    }
+  }
+
+  /** 조용한 작업이 보고하기로 정했을 때: 작업을 보이게 바꾸고 모아 둔 기록을 남깁니다. */
+  private reveal(sink: QuietSink, steps: StepTracker, input: TaskInput, task: TaskRow): void {
+    this.d.store.revealTask(task.id);
+    sink.reveal([{ kind: 'user', data: { text: input.trigger ?? input.text, src: input.sourceLabel } }]);
+    steps.show();
+  }
+
+  /** 조용한 작업이 아무것도 보고하지 않을 때: 대화 기록 · 작업 기록을 남기지 않습니다. */
+  private vanish(sink: QuietSink, threadId: string, baseline: number, taskId: string): void {
+    sink.discard();
+    this.d.store.deleteMessagesAfter(threadId, baseline);
+    this.d.store.deleteTask(taskId);
   }
 
   private async run(input: TaskInput, startTask: TaskRow, abort: AbortController): Promise<void> {
     const { store, bus, config } = this.d;
     let agent = store.getAgent(this.agentId);
     const thread = store.getThread(startTask.threadId);
+    const quiet = input.quiet === true;
+    const sink: TaskSink = quiet ? new QuietSink(store, bus, agent.id, thread.id, startTask.id) : new LiveSink(store, bus, agent.id, thread.id, startTask.id);
     let task = store.updateTask(startTask.id, { status: 'running', startedAt: Date.now() });
-    bus.emit({ type: 'task.update', task });
-    this.setStatus('working', task.title);
-    const steps = new StepTracker(store, bus, task);
+    if (!quiet) {
+      bus.emit({ type: 'task.update', task });
+      this.setStatus('working', task.title);
+    }
+    const steps = new StepTracker(store, bus, task, !quiet);
     steps.add(`요청 수신 · ${input.sourceLabel}`, new Date().toLocaleTimeString('ko-KR', { timeZone: process.env['TZ'] || undefined, hour12: false }), 'done');
 
     const tz = process.env['TZ'] || 'UTC';
-    const env: ToolEnv = { agent, workspace: this.workspace(), threadId: thread.id, taskId: task.id, signal: abort.signal, reply: input.reply };
+    const env: ToolEnv = {
+      agent,
+      workspace: this.workspace(),
+      threadId: thread.id,
+      taskId: task.id,
+      signal: abort.signal,
+      reply: input.reply,
+      source: input.source,
+      sourceLabel: input.sourceLabel,
+      quiet,
+      reportTo: input.reportTo ?? null,
+      chain: input.chain ?? [],
+      delegation: input.delegation ?? null,
+      deferred: false,
+      grants: new Set<string>(),
+      screen: null,
+      sink,
+    };
+    // 조용한 작업이 보고 없이 끝나면 이 뒤에 쌓인 대화 기록을 지웁니다.
+    const baseline = quiet ? store.lastMessageId(thread.id) : 0;
+    let finalText = '';
+    let endStatus: TaskEnd['status'] = 'done';
+    let endError: string | null = null;
+    let silent = false;
 
     try {
       // 이전 실행이 도구 호출 직후 끊겼다면 결과 짝을 채웁니다.
@@ -312,7 +441,6 @@ export class AgentRuntime {
       let retries = 0;
       let parseRetries = 0;
       let contextRetry = false;
-      let finalText = '';
       let answerStep: string | null = null;
 
       for (;;) {
@@ -324,9 +452,17 @@ export class AgentRuntime {
         assertDailyBudget(agent.name, store.usageTotal(agent.id, dayKey(new Date(), tz)), agent.limits.tokensPerDay, tz);
 
         const level = this.d.serverToolLevel.get(agent.model) ?? 0;
-        const { tools, hadServer } = this.buildTools(agent, model, level);
+        const { tools, hadServer, hadComputer } = this.buildTools(agent, model, level, quiet);
         const links = store.listAgentModules(agent.id).map((l) => store.findModule(l.moduleId)).filter((m): m is NonNullable<typeof m> => m !== null);
-        const system = buildSystemPrompt({ agent, defs: this.d.defs(), channels: links.filter((m) => m.manifest.channel && m.enabled), connected: links, rootDir: config.rootDir });
+        const system = buildSystemPrompt({
+          agent,
+          defs: this.d.defs(),
+          channels: links.filter((m) => m.manifest.channel && m.manifest.channel.send !== false && m.enabled),
+          connected: links,
+          peers: store.listAgents(),
+          rootDir: config.rootDir,
+          screen: hadComputer,
+        });
         const hash = sha256(`${agent.model}\n${system}\n${JSON.stringify(tools)}`);
         const threadNow = store.getThread(thread.id);
         if (threadNow.frozenHash !== hash) {
@@ -365,11 +501,19 @@ export class AgentRuntime {
           const stream = client.beta.messages.stream(params as unknown as Anthropic.Beta.Messages.MessageCreateParamsNonStreaming, { signal: abort.signal });
           stream.on('text', (delta: string) => {
             if (!answerStep) answerStep = steps.start('답변 작성', '작성 중');
-            bus.emit({ type: 'agent.delta', agentId: agent.id, threadId: thread.id, taskId: task.id, text: delta });
+            sink.emit({ type: 'agent.delta', agentId: agent.id, threadId: thread.id, taskId: task.id, text: delta });
           });
           final = (await stream.finalMessage()) as unknown as typeof final;
         } catch (err) {
           if (abort.signal.aborted) throw new TaskFailure('취소됨', '작업을 취소했습니다.');
+          if (err instanceof Anthropic.BadRequestError && hadComputer && /computer/i.test(err.message)) {
+            // 이 모델이 화면 제어 도구 묶음을 받지 않으면 빼고 다시 보냅니다 (Claude 5 계열 · Opus 4.8 만 지원).
+            this.d.noComputer.add(agent.model);
+            sink.timeline('system', { text: `'${agent.model}' 모델은 화면 제어 도구(${COMPUTER_TOOLSET})를 지원하지 않아 이번에는 화면 제어 없이 진행합니다. 화면 제어가 필요하면 Claude 5 계열이나 Opus 4.8 모델로 바꾸세요.` });
+            this.d.log.info('화면 제어 도구 묶음을 빼고 다시 요청합니다', { model: agent.model, reason: err.message.slice(0, 160) });
+            step -= 1;
+            continue;
+          }
           if (err instanceof Anthropic.BadRequestError && hadServer && level < 2) {
             // 이 모델이 해당 버전의 서버 도구(웹 검색·가져오기)를 받지 않으면 한 단계 낮춰 다시 보냅니다.
             this.d.serverToolLevel.set(agent.model, level + 1);
@@ -382,8 +526,7 @@ export class AgentRuntime {
             if (e.retryable && retries < RETRY_LIMIT) {
               retries += 1;
               const wait = e.retryAfterMs ?? retryBackoffMs(retries);
-              const item = store.addTimeline(thread.id, task.id, 'system', { text: `${e.message} (${retries}/${RETRY_LIMIT}, ${Math.ceil(wait / 1000)}초 대기)` });
-              bus.emit({ type: 'timeline.add', agentId: agent.id, item });
+              sink.timeline('system', { text: `${e.message} (${retries}/${RETRY_LIMIT}, ${Math.ceil(wait / 1000)}초 대기)` });
               await sleep(wait, abort.signal);
               step -= 1;
               continue;
@@ -407,8 +550,7 @@ export class AgentRuntime {
         if (fb.length > 0) {
           content = sanitizeFallbackContent(content);
           const last = fb[fb.length - 1] as { from?: { model?: string }; to?: { model?: string } };
-          const item = store.addTimeline(thread.id, task.id, 'system', { text: `안전 분류기 판단으로 ${last.from?.model ?? '요청 모델'} 대신 ${last.to?.model ?? '대체 모델'}이(가) 이어서 답했습니다.` });
-          bus.emit({ type: 'timeline.add', agentId: agent.id, item });
+          sink.timeline('system', { text: `안전 분류기 판단으로 ${last.from?.model ?? '요청 모델'} 대신 ${last.to?.model ?? '대체 모델'}이(가) 이어서 답했습니다.` });
         }
 
         const stop = final.stop_reason;
@@ -429,7 +571,9 @@ export class AgentRuntime {
           step -= 1;
           continue;
         }
-        const toolUses = content.filter((b) => b.type === 'tool_use') as unknown as { id: string; name: string; input: unknown }[];
+        const toolUses = content
+          .filter((b) => b.type === 'tool_use')
+          .map((b) => ({ id: String(b['id']), name: String(b['name']), input: b['input'], ...(typeof b['toolset_name'] === 'string' ? { toolset: b['toolset_name'] } : {}) }));
         if (stop === 'max_tokens') {
           if (toolUses.length > 0) {
             throw new TaskFailure('출력이 잘렸습니다', `도구 입력이 최대 출력 토큰(${clampMaxTokens(config.agentMaxTokens, model)})에서 잘려 실행하지 않았습니다. AGENT_MAX_TOKENS 를 늘리거나 작업을 나누세요.`);
@@ -441,20 +585,30 @@ export class AgentRuntime {
         store.appendMessage(thread.id, 'assistant', content);
         if (stop === 'tool_use' && toolUses.length > 0) {
           const mid = textOf(content);
-          if (mid) {
-            const item = store.addTimeline(thread.id, task.id, 'agent', { text: mid });
-            bus.emit({ type: 'timeline.add', agentId: agent.id, item });
-          }
+          if (mid) sink.timeline('agent', { text: mid });
           if (answerStep) {
             steps.end(answerStep, true, '중간 답변');
             answerStep = null;
           }
-          const results = await Promise.all(toolUses.map((u) => this.d.executor.execute(u, env, steps)));
+          const results = await this.d.executor.executeAll(toolUses, env, steps);
           store.appendMessage(
             thread.id,
             'user',
-            toolUses.map((u, i) => ({ type: 'tool_result', tool_use_id: u.id, content: results[i]?.content ?? '', ...(results[i]?.isError ? { is_error: true } : {}) })),
+            toolUses.map((u, i) => ({
+              type: 'tool_result',
+              tool_use_id: u.id,
+              // 도구 묶음(화면 제어)의 결과에는 그 묶음 이름을 그대로 붙여야 합니다.
+              ...(u.toolset ? { toolset_name: u.toolset } : {}),
+              content: results[i]?.content ?? '',
+              ...(results[i]?.isError ? { is_error: true } : {}),
+            })),
           );
+          const stopped = results.find((r) => r?.stop)?.stop;
+          if (stopped) {
+            // 비상 정지: 결과를 남긴 뒤 작업을 끝냅니다.
+            sink.timeline('system', { text: stopped });
+            abort.abort();
+          }
           continue;
         }
         finalText = textOf(content);
@@ -462,37 +616,54 @@ export class AgentRuntime {
       }
 
       if (answerStep) steps.end(answerStep, true, '완료');
-      if (finalText) {
-        const item = store.addTimeline(thread.id, task.id, 'agent', { text: finalText });
-        bus.emit({ type: 'timeline.add', agentId: agent.id, item });
-      }
-      if (input.reply && finalText) {
-        const sendStep = steps.start(`전송 · ${input.sourceLabel}`, '보내는 중');
-        try {
-          await this.d.deliver(agent, env, input.reply.moduleId, input.reply.target, finalText);
-          steps.end(sendStep, true, '보냄');
-        } catch (err) {
-          steps.end(sendStep, false, (err as Error).message.slice(0, 60));
-          const item = store.addTimeline(thread.id, task.id, 'error', { title: '답변을 보내지 못했습니다', text: (err as Error).message });
-          bus.emit({ type: 'timeline.add', agentId: agent.id, item });
+
+      if (quiet && sink instanceof QuietSink) {
+        this.lastQuietError = null;
+        if (isSilentReport(finalText)) {
+          // 보고할 것이 없음: 화면 · 채널 · 대화 기록 어디에도 남기지 않습니다.
+          silent = true;
+          this.vanish(sink, thread.id, baseline, task.id);
+          return;
         }
+        // 보고할 것이 있음: 모아 둔 기록을 남기고, 보고를 표시 · 전송합니다.
+        this.reveal(sink, steps, input, task);
+        sink.timeline('report', { text: finalText, source: input.sourceLabel });
+        bus.activity({ type: 'agent.report', category: 'agent', tone: 'new', who: agent.name, text: `보고 · ${oneLine(finalText).slice(0, 140)}`, agentId: agent.id });
+        bus.emit({ type: 'report', agentId: agent.id, text: finalText.slice(0, 500), source: input.sourceLabel });
+        if (env.reportTo) await this.deliverStep(agent, env, steps, env.reportTo, finalText, '보고', '보고를 보내지 못했습니다');
+      } else {
+        if (finalText) sink.timeline('agent', { text: finalText });
+        if (input.reply && finalText) await this.deliverStep(agent, env, steps, input.reply, finalText, input.sourceLabel, '답변을 보내지 못했습니다');
       }
       task = store.updateTask(task.id, { status: 'done', finishedAt: Date.now(), steps: steps.steps });
       bus.emit({ type: 'task.update', task });
-      this.setStatus(this.running.size > 1 ? 'working' : 'idle', null);
+      if (!quiet) this.setStatus(this.visibleRunning() > 1 ? 'working' : 'idle', null);
     } catch (err) {
       const cancelled = abort.signal.aborted;
       const title = err instanceof TaskFailure ? err.title : cancelled ? '취소됨' : '작업 실패';
       const message = err instanceof AppError || err instanceof Error ? err.message : String(err);
       if (!(err instanceof AppError) && !(err instanceof TaskFailure)) this.d.log.error('작업 중 예상하지 못한 오류', { agent: agent.name, error: message, stack: (err as Error).stack });
-      const item = store.addTimeline(thread.id, task.id, 'error', { title, text: message });
-      bus.emit({ type: 'timeline.add', agentId: agent.id, item });
-      task = store.updateTask(task.id, { status: cancelled ? 'cancelled' : 'failed', finishedAt: Date.now(), error: message, steps: steps.steps });
+      endStatus = cancelled ? 'cancelled' : 'failed';
+      endError = message;
+      if (quiet && sink instanceof QuietSink && sink.hidden) {
+        // 조용한 작업: 취소되었거나 직전과 같은 오류가 되풀이되면 흔적 없이 끝내고, 처음 보는 오류만 보입니다.
+        if (cancelled || this.lastQuietError === message) {
+          silent = true;
+          this.vanish(sink, thread.id, baseline, task.id);
+          return;
+        }
+        this.lastQuietError = message;
+        this.reveal(sink, steps, input, task);
+      }
+      sink.timeline('error', { title, text: message });
+      task = store.updateTask(task.id, { status: endStatus, finishedAt: Date.now(), error: message, steps: steps.steps });
       bus.emit({ type: 'task.update', task });
       if (!cancelled) {
         bus.activity({ type: 'task.failed', category: 'agent', tone: 'error', who: agent.name, text: `${title} · ${message.slice(0, 120)}`, agentId: agent.id });
-        this.setStatus('error', message.slice(0, 200));
-      } else this.setStatus('idle', null);
+        if (!quiet) this.setStatus('error', message.slice(0, 200));
+      } else if (!quiet) this.setStatus('idle', null);
+    } finally {
+      this.d.onTaskEnd({ input, task, status: endStatus, finalText, error: endError, silent, deferred: env.deferred });
     }
   }
 

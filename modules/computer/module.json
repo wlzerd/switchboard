@@ -1,0 +1,24 @@
+{
+  "id": "computer",
+  "name": "화면 제어",
+  "version": "1.0.0",
+  "description": "연결된 에이전트가 이 컴퓨터의 화면을 보고 마우스 · 키보드로 조작합니다 (macOS · Linux X11). 마우스를 화면 왼쪽 위 모서리로 옮기면 멈춥니다.",
+  "kind": "module",
+  "entry": "index.js",
+  "license": "MIT",
+  "author": "Switchboard",
+  "icon": "screen",
+  "computer": { "label": "이 컴퓨터 화면" },
+  "defaultEnabled": false,
+  "env": [
+    { "name": "COMPUTER_MAX_EDGE", "required": false, "description": "스크린샷 긴 변 최대 픽셀 (기본 1568, 640~2000)" },
+    { "name": "DISPLAY", "required": false, "description": "Linux: X11 화면 (예: :0, 가상 화면은 :99)" },
+    { "name": "XAUTHORITY", "required": false, "description": "Linux: X11 인증 파일 경로 (필요할 때만)" }
+  ],
+  "permissions": {
+    "net": [],
+    "fsWrite": true,
+    "childProcess": true
+  },
+  "tools": []
+}

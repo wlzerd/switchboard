@@ -1,3 +1,5 @@
+import type { AllowedFolder } from '../permissions/folders.ts';
+
 export type HookEvent = 'before_tool' | 'after_tool' | 'before_send' | 'on_message' | 'before_install';
 
 export const HOOK_EVENTS: readonly HookEvent[] = ['before_tool', 'after_tool', 'before_send', 'on_message', 'before_install'];
@@ -17,6 +19,12 @@ export interface ToolCtx extends BaseCtx {
   category: string;
   input: Record<string, unknown>;
   workspace: string;
+  /** 셸 명령이 도는 폴더 (없으면 작업 폴더) */
+  cwd?: string;
+  /** 사용자가 허락한 작업 폴더 밖 폴더 (없으면 작업 폴더만) */
+  folders?: readonly AllowedFolder[];
+  /** 서버 계정의 홈 (경로 표시용, 없으면 os.homedir()) */
+  home?: string;
   command: string | null;
   /** 도구가 건드리는 파일들의 절대 경로 (심볼릭 링크를 푼 값) */
   paths: string[];

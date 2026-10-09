@@ -11,7 +11,11 @@ export type ServerEvent =
   | { type: 'task.update'; task: TaskRow }
   | { type: 'timeline.add'; agentId: string; item: TimelineRow }
   | { type: 'timeline.update'; agentId: string; item: TimelineRow }
-  | { type: 'edge.pulse'; from: string; to: string; kind: 'message' | 'skill' }
+  | { type: 'edge.pulse'; from: string; to: string; kind: 'message' | 'skill' | 'delegate' }
+  /** 조용한 작업(하트비트 · 자동 알림)이 보고할 것을 찾았을 때만 */
+  | { type: 'report'; agentId: string; text: string; source: string }
+  /** 사용자가 직접 누른 하트비트 점검이 끝났을 때 (보고가 없었다는 것도 알려 주기 위함) */
+  | { type: 'heartbeat.done'; agentId: string; reported: boolean; error: string | null }
   | { type: 'approval.created'; approval: ApprovalRow }
   | { type: 'approval.resolved'; approval: ApprovalRow }
   | { type: 'module.status'; moduleId: string; status: ModuleStatus; detail: string | null }

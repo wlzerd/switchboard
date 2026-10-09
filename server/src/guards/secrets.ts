@@ -49,3 +49,30 @@ export function findSecret(text: string, known: readonly string[] = []): SecretH
   }
   return best ? { kind: best.kind, line: lineOf(text, best.index) } : null;
 }
+
+function luhn(digits: string): boolean {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i -= 1) {
+    let n = digits.charCodeAt(i) - 48;
+    if (double) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+/**
+ * 카드 번호처럼 보이는 숫자(13~19자리, 공백 · 하이픈 구분 허용, Luhn 검사 통과)를 찾으면 앞 4자리 … 뒤 4자리로 돌려줍니다.
+ * 화면 제어로 결제 정보를 입력하지 못하게 하는 기본 금지 조항(금융 거래)에 씁니다.
+ */
+export function findCardNumber(text: string): string | null {
+  for (const m of text.matchAll(/\d(?:[ -]?\d){12,18}/g)) {
+    const digits = m[0].replace(/[ -]/g, '');
+    if (digits.length >= 13 && digits.length <= 19 && luhn(digits)) return `${digits.slice(0, 4)}…${digits.slice(-4)}`;
+  }
+  return null;
+}

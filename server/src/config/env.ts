@@ -49,6 +49,11 @@ export interface Config {
 
   guardFloodPerMinute: number;
   guardLoopRepeat: number;
+
+  /** 위임이 이어질 수 있는 최대 단계 (A→B→C 는 2단계) */
+  delegationMaxDepth: number;
+  /** 하트비트 최소 간격(분) */
+  heartbeatMinMinutes: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -213,6 +218,9 @@ export function parseConfig(env: Env, rootDir: string): Config {
 
     guardFloodPerMinute: r.int('GUARD_FLOOD_PER_MINUTE', 20, 1, 1000),
     guardLoopRepeat: r.int('GUARD_LOOP_REPEAT', 5, 2, 100),
+
+    delegationMaxDepth: r.int('DELEGATION_MAX_DEPTH', 3, 1, 10),
+    heartbeatMinMinutes: r.int('HEARTBEAT_MIN_MINUTES', 5, 1, 1440),
   };
 
   if (r.issues.length > 0) throw new ConfigError(r.issues);

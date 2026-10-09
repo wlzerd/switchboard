@@ -31,6 +31,28 @@ export interface TaskView {
   finishedAt: number | null;
 }
 
+export interface DelegationSettings {
+  /** 다른 에이전트가 맡기는 일을 받는지 */
+  accept: boolean;
+  /** 다른 에이전트에게 일을 맡길 수 있는지 */
+  send: boolean;
+  /** 권한이 없을 때 일을 넘길 상위 에이전트 */
+  supervisorId: string | null;
+}
+
+export interface HeartbeatSettings {
+  enabled: boolean;
+  everyMinutes: number;
+  /** 'HH:MM-HH:MM' (서버 TZ). null 이면 하루 종일 */
+  activeHours: string | null;
+  checklist: string;
+}
+
+export interface ReportTarget {
+  moduleId: string;
+  target: string;
+}
+
 export interface AgentLimits {
   tokensPerDay: number;
   stepsPerTask: number;
@@ -57,6 +79,11 @@ export interface AgentView {
   tokenLimit: number;
   limits: AgentLimits;
   links: { moduleId: string; targets: string[]; trigger: 'direct' | 'all' }[];
+  delegation: DelegationSettings;
+  heartbeat: (HeartbeatSettings & { lastAt: number | null }) | null;
+  report: ReportTarget | null;
+  /** 허용 폴더 (홈은 ~ 로 줄인 경로) */
+  folders: { path: string; mode: 'read' | 'write' }[];
 }
 
 export interface InstallCheck {
@@ -84,6 +111,11 @@ export interface ModuleView {
   status: ModuleStatus;
   statusDetail: string | null;
   channel: boolean;
+  /** 메시지를 보낼 수 있는 채널인지 (받기만 하는 이메일 등은 false) */
+  canSend: boolean;
+  /** 화면 제어 모듈인지, 지금 화면을 쓰는 에이전트 */
+  computer: boolean;
+  screenHolder: { taskId: string; agentId: string; agentName: string; since: number } | null;
   tools: { name: string; title: string }[];
   env: { name: string; required: boolean; present: boolean }[];
   permissions: { net: string[]; fsWrite: boolean; childProcess: boolean };
@@ -101,8 +133,11 @@ export interface Overview {
   modules: ModuleView[];
   skills: ModuleView[];
   builtinNodes: { id: string; label: string; tools: string[] }[];
-  edges: { from: string; to: string; kind: 'message' | 'skill' | 'new' | 'creating' }[];
+  edges: { from: string; to: string; kind: EdgeKind }[];
 }
+
+/** message·skill·new·creating: 모듈·스킬 연결 / delegate: 상위 에이전트 관계 / delegating: 진행 중인 위임 */
+export type EdgeKind = 'message' | 'skill' | 'new' | 'creating' | 'delegate' | 'delegating';
 
 export interface PermissionDef {
   key: string;
@@ -161,6 +196,7 @@ export interface Meta {
   themes: { presets: { id: string; name: string; tokens: ThemeTokens }[]; default: { preset: string; radius: number; font: Theme['font']; density: Theme['density']; motion: Theme['motion'] } };
   tz: string;
   envKey: boolean;
+  heartbeat: { minMinutes: number; maxMinutes: number; checklistMax: number };
 }
 
 export interface ModelInfo {
@@ -230,7 +266,7 @@ export interface TimelineItem {
   id: number;
   threadId: string;
   taskId: string | null;
-  kind: 'user' | 'agent' | 'tool' | 'approval' | 'hook' | 'block' | 'skill' | 'system' | 'error';
+  kind: 'user' | 'agent' | 'tool' | 'approval' | 'hook' | 'block' | 'skill' | 'system' | 'error' | 'delegate' | 'report' | 'screen';
   data: Record<string, unknown>;
   createdAt: number;
 }
@@ -269,7 +305,11 @@ export type ServerEvent =
   | { type: 'task.update'; task: TaskView & { agentId: string; threadId: string } }
   | { type: 'timeline.add'; agentId: string; item: TimelineItem }
   | { type: 'timeline.update'; agentId: string; item: TimelineItem }
-  | { type: 'edge.pulse'; from: string; to: string; kind: 'message' | 'skill' }
+  | { type: 'edge.pulse'; from: string; to: string; kind: 'message' | 'skill' | 'delegate' }
+  /** 조용한 작업(하트비트 · 자동 알림)이 보고할 것을 찾았을 때만 */
+  | { type: 'report'; agentId: string; text: string; source: string }
+  /** 사용자가 직접 누른 하트비트 점검이 끝났을 때 */
+  | { type: 'heartbeat.done'; agentId: string; reported: boolean; error: string | null }
   | { type: 'approval.created'; approval: ApprovalView }
   | { type: 'approval.resolved'; approval: ApprovalView }
   | { type: 'module.status'; moduleId: string; status: ModuleStatus; detail: string | null }

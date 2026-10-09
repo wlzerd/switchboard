@@ -5,6 +5,8 @@ import { shortModel } from '../components/Shell';
 import { Avatar, Modal, Seg, StatusLine, Steps, Switch } from '../components/ui';
 import { EFFORT_LABEL } from '../lib/agent';
 import { api, errorText } from '../lib/api';
+import { MODE_LABEL } from '../lib/folders';
+import { delegationChips, heartbeatFormOf, heartbeatFormProblem, heartbeatPayload, intervalChoices, intervalLabel, sameHeartbeat, type HeartbeatForm } from '../lib/autonomy';
 import { clock, relTime } from '../lib/format';
 import { navigate } from '../lib/router';
 import { onServerEvent, refreshOverview, toast, useApp } from '../lib/store';
@@ -131,6 +133,10 @@ const TOOL_ICON: Record<string, string> = {
   schedule_create: 'clock',
   schedule_list: 'clock',
   schedule_cancel: 'clock',
+  delegate_task: 'forward',
+  heartbeat_set: 'pulse',
+  email_search: 'mail',
+  email_read: 'mail',
 };
 
 function ToolItem({ d }: { d: Record<string, unknown> }) {
@@ -235,6 +241,91 @@ function ApprovalItem({ d }: { d: Record<string, unknown> }) {
   );
 }
 
+const DELEGATE_STATUS: Record<string, { text: string; tone: string }> = {
+  sent: { text: '처리 중', tone: '' },
+  done: { text: '완료', tone: 'ok' },
+  failed: { text: '실패', tone: 'bad' },
+  cancelled: { text: '취소됨', tone: 'bad' },
+};
+
+function DelegateItem({ d }: { d: Record<string, unknown> }) {
+  const agents = useApp((s) => s.overview?.agents);
+  const status = str(d, 'status') || 'sent';
+  const view = DELEGATE_STATUS[status] ?? { text: status, tone: '' };
+  const to = agents?.find((a) => a.id === str(d, 'to'));
+  return (
+    <div className="delegate-card indent">
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+        <span style={{ color: 'var(--text2)', display: 'grid' }}>
+          <Icon name="forward" size={16} stroke={2.2} />
+        </span>
+        {to ? <Avatar name={to.name} color={to.color} size={20} /> : null}
+        <b style={{ fontSize: 13.5 }}>{to?.name ?? str(d, 'toName')}에게 위임</b>
+        <span className={`chip ${view.tone}`} style={{ marginLeft: 'auto' }}>
+          {view.text}
+        </span>
+      </div>
+      {status === 'sent' ? <span className="flow-line" /> : null}
+      <span style={{ fontSize: 13, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{str(d, 'task')}</span>
+      {str(d, 'reason') ? (
+        <span className="muted" style={{ fontSize: 12 }}>
+          이유 · {str(d, 'reason')}
+        </span>
+      ) : null}
+      {str(d, 'result') ? (
+        <span className="dim" style={{ fontSize: 12.5, borderTop: '1px solid var(--line)', paddingTop: 8, overflowWrap: 'anywhere' }}>
+          {str(d, 'result')}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** 화면 제어 카드: 이어진 동작들을 한 카드에 모으고, 에이전트가 마지막으로 본 화면을 보여 줍니다. */
+function ScreenItem({ d }: { d: Record<string, unknown> }) {
+  const [open, setOpen] = useState(false);
+  const [big, setBig] = useState(false);
+  const count = typeof d['count'] === 'number' ? d['count'] : 0;
+  const actions = Array.isArray(d['actions']) ? (d['actions'] as { s?: unknown; ok?: unknown }[]).filter((a) => typeof a.s === 'string') : [];
+  const image = typeof d['image'] === 'string' ? d['image'] : null;
+  const last = actions[actions.length - 1];
+  const ok = d['ok'] !== false;
+  return (
+    <div className="screen-card indent">
+      <button type="button" className="screen-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span style={{ width: 26, height: 26, flex: 'none', borderRadius: 7, display: 'grid', placeItems: 'center', background: 'var(--skill-dim)', color: 'var(--skill)' }}>
+          <Icon name="screen" size={14} stroke={2} />
+        </span>
+        <b style={{ fontSize: 13 }}>화면 제어</b>
+        <span className="dim" style={{ fontSize: 13, flex: '1 1 140px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {String(last?.s ?? '')}
+        </span>
+        <span className={`chip ${ok ? 'ok' : 'bad'}`}>동작 {count}개</span>
+        <Icon name={open ? 'chevronDown' : 'chevronRight'} size={14} stroke={2} />
+      </button>
+      {image ? (
+        <button type="button" className="screen-thumb" aria-label="에이전트가 본 화면 크게 보기" onClick={() => setBig(true)}>
+          <img src={`/api/screens/${image}`} alt="에이전트가 마지막으로 본 화면" loading="lazy" />
+        </button>
+      ) : null}
+      {open ? (
+        <ol className="screen-actions">
+          {actions.map((a, i) => (
+            <li key={i} className={a.ok === false ? 'bad' : undefined}>
+              {String(a.s)}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {big && image ? (
+        <Modal title="에이전트가 본 화면" onClose={() => setBig(false)}>
+          <img src={`/api/screens/${image}`} alt="에이전트가 마지막으로 본 화면" style={{ width: '100%', borderRadius: 8, display: 'block' }} />
+        </Modal>
+      ) : null}
+    </div>
+  );
+}
+
 function TimelineEntry({ item, agent, tz }: { item: TimelineItem; agent: AgentView; tz: string }) {
   const d = item.data;
   switch (item.kind) {
@@ -311,6 +402,26 @@ function TimelineEntry({ item, agent, tz }: { item: TimelineItem; agent: AgentVi
           <span className="chip" style={{ height: 'auto', minHeight: 24, whiteSpace: 'normal', padding: '3px 10px', textAlign: 'center' }}>
             {str(d, 'text')}
           </span>
+        </div>
+      );
+    case 'delegate':
+      return <DelegateItem d={d} />;
+    case 'screen':
+      return <ScreenItem d={d} />;
+    case 'report':
+      return (
+        <div className="report-card indent">
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+            <span style={{ color: 'var(--msg)', display: 'grid' }}>
+              <Icon name="report" size={16} stroke={2.2} />
+            </span>
+            <b style={{ fontSize: 13.5 }}>보고</b>
+            <span className="muted" style={{ fontSize: 12, marginLeft: 'auto' }}>
+              {str(d, 'source') ? `${str(d, 'source')} · ` : ''}
+              {clock(item.createdAt, tz)}
+            </span>
+          </div>
+          <div className="body">{str(d, 'text')}</div>
         </div>
       );
     case 'error':
@@ -623,9 +734,176 @@ function Schedules({ agentId }: { agentId: string }) {
   );
 }
 
+/** 하트비트 · 보고 받을 곳. 조용한 작업(하트비트 · 새 메일 같은 자동 알림)의 보고가 이리로 갑니다. */
+function HeartbeatPanel({ agent }: { agent: AgentView }) {
+  const meta = useApp((s) => s.meta) as Meta;
+  const modules = useApp((s) => s.overview?.modules) ?? [];
+  const limits = meta.heartbeat;
+  const saved = useMemo(() => heartbeatFormOf(agent, limits), [agent, limits]);
+  const [form, setForm] = useState<HeartbeatForm>(saved);
+  const [busy, setBusy] = useState<'save' | 'run' | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // 에이전트가 heartbeat_set 으로 바꾸는 등 서버 값이 바뀌면, 고치던 중이 아닐 때만 화면 값을 맞춥니다.
+  const shown = useRef(saved);
+  useEffect(() => {
+    setForm((f) => (sameHeartbeat(f, shown.current) ? saved : f));
+    shown.current = saved;
+  }, [saved]);
+
+  useEffect(() => {
+    if (!checking) return undefined;
+    const off = onServerEvent((e) => {
+      if (e.type === 'heartbeat.done' && e.agentId === agent.id) setChecking(false);
+    });
+    // 끝 알림을 놓쳐도(연결 끊김 등) 버튼이 계속 돌지 않게 합니다.
+    const t = setTimeout(() => setChecking(false), 5 * 60_000);
+    return () => {
+      off();
+      clearTimeout(t);
+    };
+  }, [checking, agent.id]);
+
+  const dirty = !sameHeartbeat(form, saved);
+  const senders = modules.filter((m) => m.canSend);
+  const choices = intervalChoices(limits, form.everyMinutes);
+  const set = (patch: Partial<HeartbeatForm>): void => {
+    setForm((f) => ({ ...f, ...patch }));
+    setError(null);
+  };
+
+  const save = async (next: HeartbeatForm): Promise<boolean> => {
+    const problem = heartbeatFormProblem(next, limits, modules);
+    if (problem) {
+      setError(problem);
+      return false;
+    }
+    try {
+      await api(`/api/agents/${agent.id}/heartbeat`, { method: 'PUT', body: heartbeatPayload(next) });
+      shown.current = next;
+      setForm(next);
+      refreshOverview(0);
+      return true;
+    } catch (err) {
+      setError(errorText(err));
+      return false;
+    }
+  };
+
+  const onSave = async (next: HeartbeatForm): Promise<void> => {
+    setBusy('save');
+    const was = saved.enabled;
+    if (await save(next)) toast(next.enabled && !was ? `하트비트 켬 · ${intervalLabel(next.everyMinutes)}마다` : !next.enabled && was ? '하트비트 끔' : '하트비트 설정을 저장했습니다', 'ok');
+    setBusy(null);
+  };
+
+  const onRun = async (): Promise<void> => {
+    setBusy('run');
+    try {
+      if (dirty && !(await save(form))) return;
+      await api(`/api/agents/${agent.id}/heartbeat/run`, { body: {} });
+      setChecking(true);
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const hb = agent.heartbeat;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="section-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {hb?.enabled ? (
+            <span className="hb-mark">
+              <Icon name="pulse" size={13} stroke={2.2} />
+            </span>
+          ) : null}
+          하트비트
+        </span>
+        <span className="muted" style={{ fontSize: 11.5 }}>
+          {hb?.lastAt ? `마지막 ${relTime(hb.lastAt)}` : ''}
+        </span>
+        <span style={{ marginLeft: 'auto' }}>
+          <Switch checked={form.enabled} label="하트비트 켜기" disabled={busy !== null} onChange={(enabled) => void onSave({ ...form, enabled })} />
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+        <select className="select" style={{ height: 34, fontSize: 13, flex: '1 1 110px' }} aria-label="확인 간격" value={form.everyMinutes} onChange={(e) => set({ everyMinutes: Number(e.target.value) })}>
+          {choices.map((m) => (
+            <option key={m} value={m}>
+              {intervalLabel(m)}마다
+            </option>
+          ))}
+        </select>
+        <Seg
+          value={form.allDay ? 'all' : 'hours'}
+          options={[
+            { value: 'all', label: '하루 종일' },
+            { value: 'hours', label: '시간 지정' },
+          ]}
+          onChange={(v) => set({ allDay: v === 'all' })}
+          label="활동 시간"
+        />
+      </div>
+      {!form.allDay ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, animation: 'rise .25s ease backwards' }}>
+          <input className="input mono" type="time" style={{ height: 34, fontSize: 13, flex: 1, minWidth: 0 }} aria-label="활동 시작" value={form.start} onChange={(e) => set({ start: e.target.value })} />
+          <span className="muted">–</span>
+          <input className="input mono" type="time" style={{ height: 34, fontSize: 13, flex: 1, minWidth: 0 }} aria-label="활동 끝" value={form.end} onChange={(e) => set({ end: e.target.value })} />
+        </div>
+      ) : null}
+      <textarea
+        className="textarea"
+        rows={3}
+        style={{ fontSize: 13 }}
+        aria-label="점검 · 알릴 조건"
+        placeholder="점검 · 알릴 조건"
+        maxLength={limits.checklistMax + 200}
+        value={form.checklist}
+        onChange={(e) => set({ checklist: e.target.value })}
+      />
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+        <span className="section-label" style={{ flex: 'none' }}>
+          보고
+        </span>
+        <select className="select" style={{ height: 34, fontSize: 13, flex: '1 1 100px', minWidth: 0 }} aria-label="보고 받을 채널" value={form.reportModule} onChange={(e) => set({ reportModule: e.target.value })}>
+          <option value="">화면에만</option>
+          {senders.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+        {form.reportModule ? (
+          <input className="input mono" style={{ height: 34, fontSize: 13, flex: '1 1 120px', minWidth: 0 }} aria-label="보고 받을 대상" placeholder="#채널 또는 대화 id" value={form.reportTarget} onChange={(e) => set({ reportTarget: e.target.value })} />
+        ) : null}
+      </div>
+      {error ? (
+        <span className="err" role="alert">
+          {error}
+        </span>
+      ) : null}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <button type="button" className="btn primary sm" disabled={!dirty || busy !== null} onClick={() => void onSave(form)}>
+          {busy === 'save' ? <span className="spinner" style={{ width: 12, height: 12, borderTopColor: 'var(--onAccent)' }} /> : null}
+          저장
+        </button>
+        <button type="button" className="btn sm" disabled={busy !== null || checking || form.checklist.trim() === ''} onClick={() => void onRun()}>
+          {busy === 'run' || checking ? <span className="spinner" style={{ width: 12, height: 12 }} /> : <Icon name="pulse" size={13} stroke={2.2} />}
+          {checking ? '확인 중' : '지금 확인'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AgentPanel({ agent }: { agent: AgentView }) {
   const meta = useApp((s) => s.meta) as Meta;
   const modules = useApp((s) => s.overview?.modules);
+  const agents = useApp((s) => s.overview?.agents) ?? [];
   const [edit, setEdit] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -717,12 +995,36 @@ function AgentPanel({ agent }: { agent: AgentView }) {
             return (
               <span key={l.moduleId} className={`chip ${m.kind === 'skill' ? 'skill mono' : 'msg'}`} title={l.targets.length > 0 ? l.targets.join(', ') : undefined}>
                 {m.kind === 'skill' ? (m.tools[0]?.name ?? m.name) : m.name}
-                {m.channel ? ` · ${l.trigger === 'all' ? '모든 메시지' : '호출 시'}` : ''}
+                {m.canSend ? ` · ${l.trigger === 'all' ? '모든 메시지' : '호출 시'}` : ''}
               </span>
             );
           })}
         </div>
       </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <span className="section-label">위임</span>
+        <div className="chips">
+          {delegationChips(agent.delegation, agents).map((c) => (
+            <span key={c} className="chip">
+              {c}
+            </span>
+          ))}
+        </div>
+      </div>
+      {agent.folders.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <span className="section-label">허용 폴더</span>
+          <div className="chips">
+            {agent.folders.map((f) => (
+              <span key={f.path} className={`chip mono${f.mode === 'write' ? ' new' : ''}`} title={MODE_LABEL[f.mode]}>
+                <Icon name="folder" size={11} stroke={2.2} />
+                {f.path} · {MODE_LABEL[f.mode]}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <HeartbeatPanel agent={agent} />
       <Schedules agentId={agent.id} />
       <button type="button" className="btn danger sm" style={{ alignSelf: 'flex-start' }} onClick={() => setConfirmDelete(true)}>
         <Icon name="trash" size={14} />
@@ -765,7 +1067,8 @@ function AgentConsole({ agent }: { agent: AgentView }) {
     };
     load();
     const off = onServerEvent((e) => {
-      if (e.type === 'task.update' && e.task.agentId === agent.id && e.task.status === 'queued') load();
+      // 조용한 작업은 보고할 때에만 대화방이 보이므로 report 때도 목록을 다시 읽습니다.
+      if ((e.type === 'task.update' && e.task.agentId === agent.id && e.task.status === 'queued') || (e.type === 'report' && e.agentId === agent.id)) load();
     });
     return () => {
       alive = false;

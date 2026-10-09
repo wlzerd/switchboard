@@ -91,15 +91,17 @@ describe('작업 폴더 탈출', () => {
 
   it.each([
     ['rm -rf ../shared', 'escape'],
-    ['cat ~/.bashrc', 'escape'],
-    ['cd', 'escape'],
     ['ls /etc', 'escape'],
     ['cat ../../etc/passwd > out.txt', 'escape'],
+    // 셸의 HOME 은 작업 폴더라 ~ 는 안전하지만, ~이름 은 그 사용자의 진짜 홈으로 펼쳐집니다.
+    ['cat ~root/notes.txt', 'escape'],
+    ['ls ~someone', 'escape'],
+    ['cat ~/../../../etc/hosts', 'escape'],
   ])('명령 %s → %s', (cmd, want) => {
     expect(shell(cmd)?.guard).toBe(want);
   });
 
-  it.each(['ls -la', 'cat reports/a.md', 'make 2>/dev/null', "sed 's/a/b/' x.txt", 'curl https://api.github.com/repos'])('통과: %s', (cmd) => {
+  it.each(['ls -la', 'cat reports/a.md', 'make 2>/dev/null', "sed 's/a/b/' x.txt", 'curl https://api.github.com/repos', 'cat ~/.bashrc', 'cd', 'ls $HOME/notes', 'echo ${HOME}'])('통과: %s', (cmd) => {
     expect(shell(cmd)).toBeNull();
   });
 });

@@ -30,6 +30,7 @@ interface ModuleDefinition {
   deactivate?: (ctx: ModuleContext) => unknown;
   tools?: Record<string, ToolFn>;
   send?: (target: string, text: string, ctx: ModuleContext) => unknown;
+  computer?: { run: (action: string, input: unknown, ctx: ModuleContext) => unknown };
 }
 
 interface ModuleContext {
@@ -154,6 +155,22 @@ async function handle(msg: ParentMessage): Promise<void> {
       try {
         const out = await def.send(msg.target, msg.text, ctx);
         send({ t: 'result', id: msg.id, ok: true, output: toOutput(out) });
+      } catch (err) {
+        send({ t: 'result', id: msg.id, ok: false, error: serialize(err) });
+      }
+      return;
+    }
+    case 'computer': {
+      if (!ctx || typeof def?.computer?.run !== 'function') {
+        send({ t: 'result', id: msg.id, ok: false, error: { name: 'NotAComputer', message: '이 모듈은 화면 제어를 하지 않습니다 (export default 에 computer.run 이 없음).' } });
+        return;
+      }
+      try {
+        const out = (await def.computer.run(msg.action, msg.input, ctx)) as { text?: unknown; image?: unknown } | null | undefined;
+        const image = out?.image as { data?: unknown; mediaType?: unknown } | null | undefined;
+        const valid = image && typeof image.data === 'string' && (image.mediaType === 'image/png' || image.mediaType === 'image/jpeg');
+        if (image && !valid) throw new Error('화면 제어 결과의 image 는 { data: base64 문자열, mediaType: "image/png" | "image/jpeg" } 이어야 합니다.');
+        send({ t: 'result', id: msg.id, ok: true, output: typeof out?.text === 'string' ? out.text : '', image: valid ? { data: image.data as string, mediaType: image.mediaType as 'image/png' | 'image/jpeg' } : null });
       } catch (err) {
         send({ t: 'result', id: msg.id, ok: false, error: serialize(err) });
       }

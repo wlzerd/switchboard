@@ -1,6 +1,6 @@
-import type { Overview } from './types';
+import type { DelegationSettings, EdgeKind, Overview } from './types';
 
-export type NodeKind = 'module' | 'agent' | 'skill' | 'builtin';
+export type NodeKind = 'module' | 'agent' | 'skill' | 'builtin' | 'screen';
 
 export interface LayoutNode {
   id: string;
@@ -16,7 +16,7 @@ export interface LayoutEdge {
   id: string;
   source: string;
   target: string;
-  kind: 'message' | 'skill' | 'new' | 'creating';
+  kind: EdgeKind;
 }
 
 export const COLUMN = {
@@ -36,18 +36,57 @@ function columnHeight(count: number, height: number, gap: number): number {
 }
 
 /**
+ * 에이전트 줄의 순서: 상위 에이전트 바로 아래에 그 하위 에이전트들이 오게 합니다 (위임 선이 짧아지도록).
+ * 스택으로 돌아 깊은 상하 관계에도 재귀하지 않습니다. 순환(서버가 막지만)이나 없는 상위를 가리키는 에이전트는 원래 순서로 둡니다.
+ */
+export function orderAgents<T extends { id: string; delegation: DelegationSettings }>(agents: readonly T[]): T[] {
+  const ids = new Set(agents.map((a) => a.id));
+  const children = new Map<string, T[]>();
+  const roots: T[] = [];
+  for (const a of agents) {
+    const sup = a.delegation.supervisorId;
+    if (sup && sup !== a.id && ids.has(sup)) {
+      const list = children.get(sup);
+      if (list) list.push(a);
+      else children.set(sup, [a]);
+    } else {
+      roots.push(a);
+    }
+  }
+  const out: T[] = [];
+  const seen = new Set<string>();
+  const stack: T[] = [...roots].reverse();
+  while (stack.length > 0) {
+    const a = stack.pop() as T;
+    if (seen.has(a.id)) continue;
+    seen.add(a.id);
+    out.push(a);
+    const kids = children.get(a.id) ?? [];
+    for (let i = kids.length - 1; i >= 0; i -= 1) stack.push(kids[i] as T);
+  }
+  for (const a of agents) if (!seen.has(a.id)) out.push(a);
+  return out;
+}
+
+const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
+/**
  * 모듈(왼쪽) · 에이전트(가운데) · 스킬(오른쪽) 세 줄로 놓습니다. 각 줄은 가장 긴 줄 기준으로 세로 가운데 정렬합니다.
  * 사용자가 끌어 옮긴 위치(saved)가 있으면 그 위치를 씁니다.
  */
 export function layoutGraph(o: Overview, saved: Record<string, { x: number; y: number }> = {}): { nodes: LayoutNode[]; edges: LayoutEdge[] } {
-  const modules = o.modules.filter((m) => m.status !== 'rejected');
   const agentIds = new Set(o.agents.map((a) => a.id));
+  // 화면 제어 모듈은 에이전트가 쓰는 도구라 오른쪽 줄에 둡니다. 켜져 있거나 연결된 것만 보입니다.
+  const linked = new Set(o.edges.filter((e) => agentIds.has(e.from)).map((e) => e.to));
+  const modules = o.modules.filter((m) => m.status !== 'rejected' && !m.computer);
+  const screens = o.modules.filter((m) => m.status !== 'rejected' && m.computer && (m.enabled || linked.has(`module:${m.id}`)));
   const usedBuiltins = new Set(o.edges.filter((e) => e.to.startsWith('builtin:') && agentIds.has(e.from)).map((e) => e.to));
   const builtins = o.builtinNodes.filter((b) => usedBuiltins.has(b.id));
-  const skillCount = o.skills.length + builtins.length;
+  const skillCount = screens.length + o.skills.length + builtins.length;
 
   const hM = columnHeight(modules.length, COLUMN.module.height, COLUMN.module.gap);
-  const hA = columnHeight(o.agents.length, COLUMN.agent.height, COLUMN.agent.gap);
+  const agents = orderAgents(o.agents);
+  const hA = columnHeight(agents.length, COLUMN.agent.height, COLUMN.agent.gap);
   const hS = columnHeight(skillCount, COLUMN.skill.height, COLUMN.skill.gap);
   const tall = Math.max(hM, hA, hS);
 
@@ -61,19 +100,23 @@ export function layoutGraph(o: Overview, saved: Record<string, { x: number; y: n
     const m = modules[i];
     if (m) place(`module:${m.id}`, 'module', m.id, COLUMN.module, y);
   });
-  stack(o.agents.length, COLUMN.agent.height, COLUMN.agent.gap, (tall - hA) / 2).forEach((y, i) => {
-    const a = o.agents[i];
+  stack(agents.length, COLUMN.agent.height, COLUMN.agent.gap, (tall - hA) / 2).forEach((y, i) => {
+    const a = agents[i];
     if (a) place(a.id, 'agent', a.id, COLUMN.agent, y);
   });
   const skillYs = stack(skillCount, COLUMN.skill.height, COLUMN.skill.gap, (tall - hS) / 2);
-  builtins.forEach((b, i) => place(b.id, 'builtin', b.id, COLUMN.skill, skillYs[i] ?? 0));
-  o.skills.forEach((s, i) => place(`skill:${s.id}`, 'skill', s.id, COLUMN.skill, skillYs[builtins.length + i] ?? 0));
+  screens.forEach((m, i) => place(`module:${m.id}`, 'screen', m.id, COLUMN.skill, skillYs[i] ?? 0));
+  builtins.forEach((b, i) => place(b.id, 'builtin', b.id, COLUMN.skill, skillYs[screens.length + i] ?? 0));
+  o.skills.forEach((s, i) => place(`skill:${s.id}`, 'skill', s.id, COLUMN.skill, skillYs[screens.length + builtins.length + i] ?? 0));
 
   const ids = new Set(nodes.map((n) => n.id));
   const edges: LayoutEdge[] = [];
   const seen = new Set<string>();
+  // 지금 위임이 오가는 두 에이전트 사이에는 상위 관계 점선 대신 움직이는 선 하나만 그립니다.
+  const active = new Set(o.edges.filter((e) => e.kind === 'delegating').map((e) => pairKey(e.from, e.to)));
   for (const e of o.edges) {
     if (!ids.has(e.from) || !ids.has(e.to)) continue;
+    if (e.kind === 'delegate' && active.has(pairKey(e.from, e.to))) continue;
     const id = `${e.from}->${e.to}`;
     if (seen.has(id)) continue;
     seen.add(id);
@@ -91,4 +134,20 @@ export function relatedTo(selected: string | null, edges: readonly LayoutEdge[])
     if (e.target === selected) out.add(e.source);
   }
   return out;
+}
+
+/**
+ * 같은 줄에 쌓인 에이전트끼리 잇는 위임 선: 카드 오른쪽으로 둥글게 돌아 나가 사이에 있는 카드에 가려지지 않게 합니다.
+ * 멀리 떨어진 사이일수록 더 크게 돌되, 스킬 줄을 덮지 않도록 120px 에서 멈춥니다.
+ */
+export const ARC_BOW_MIN = 36;
+export const ARC_BOW_MAX = 120;
+
+export function arcBow(dy: number): number {
+  return Math.min(ARC_BOW_MAX, ARC_BOW_MIN + Math.abs(dy) * 0.22);
+}
+
+export function arcPath(sx: number, sy: number, tx: number, ty: number): string {
+  const bow = arcBow(ty - sy);
+  return `M${sx},${sy} C${sx + bow},${sy} ${tx + bow},${ty} ${tx},${ty}`;
 }

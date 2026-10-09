@@ -1,7 +1,10 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { parseEnv } from 'node:util';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { CHECKLIST_MAX, HEARTBEAT_MAX_MINUTES } from '../agents/autonomy.ts';
+import { SCREEN_AGENT_RE, SCREEN_FILE_RE } from '../agents/screen.ts';
 import { EFFORT_LEVELS } from '../anthropic/models.ts';
 import type { App } from '../app.ts';
 import { randomId } from '../crypto/secrets.ts';
@@ -11,6 +14,7 @@ import { GUARD_DEFS } from '../guards/guards.ts';
 import { ACTIONS_BY_EVENT, FIELDS_BY_EVENT, CONDITION_OPS, renderHookCode, validateRuleHook } from '../hooks/rules.ts';
 import { HOOK_EVENTS, type HookCtx, type HookEvent } from '../hooks/types.ts';
 import { LIMIT_RULES } from '../limits/limits.ts';
+import { suggestDirs } from '../permissions/folders.ts';
 import { groupModels } from '../anthropic/models.ts';
 import { describeSpec, localToUtc, parseSpec } from '../scheduler/spec.ts';
 import { readSourceFiles } from '../modules/install.ts';
@@ -134,6 +138,7 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     themes: loadThemes(app.config.rootDir),
     tz: process.env['TZ'] || 'UTC',
     envKey: Boolean(app.config.anthropicApiKey),
+    heartbeat: { minMinutes: app.config.heartbeatMinMinutes, maxMinutes: HEARTBEAT_MAX_MINUTES, checklistMax: CHECKLIST_MAX },
   }));
 
   server.get('/api/activity', async (req) => ({ items: store.listActivity(intQuery(req, 'limit', 50, 1, 500)) }));
@@ -170,7 +175,7 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
   /* ───── 에이전트 ───── */
   server.post('/api/agents', async (req, reply) => {
     const b = readBody(req);
-    const agent = await manager.createAgent({ name: b['name'], color: b['color'], role: b['role'], keyId: b['keyId'], model: b['model'], effort: b['effort'], preset: b['preset'], modules: b['modules'] });
+    const agent = await manager.createAgent({ name: b['name'], color: b['color'], role: b['role'], keyId: b['keyId'], model: b['model'], effort: b['effort'], preset: b['preset'], modules: b['modules'], delegation: b['delegation'] });
     reply.status(201);
     return { agent };
   });
@@ -206,6 +211,47 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     return { links: manager.setModules(param(req, 'id'), b['links']) };
   });
 
+  /** 허용 폴더: { folders: [{ path, mode: 'read' | 'write' }] } */
+  server.put<IdParams>('/api/agents/:id/folders', async (req) => {
+    const b = readBody(req);
+    return { agent: manager.setFolders(param(req, 'id'), b['folders']) };
+  });
+
+  /** 화면 제어 기록의 스크린샷 (로그인한 사용자만, 이름 형식을 확인한 파일만) */
+  server.get('/api/screens/:agentId/:file', async (req, reply) => {
+    const agentId = param(req, 'agentId');
+    const file = param(req, 'file');
+    if (!SCREEN_AGENT_RE.test(agentId) || !SCREEN_FILE_RE.test(file)) throw new ValidationError('screen_name', `스크린샷 이름 '${agentId}/${file}'이(가) 올바르지 않습니다.`);
+    const p = path.join(app.config.dataDir, 'screens', agentId, file);
+    if (!fs.existsSync(p)) throw new NotFoundError('스크린샷', `${agentId}/${file}`);
+    reply.header('cache-control', 'private, max-age=86400, immutable');
+    reply.type(file.endsWith('.png') ? 'image/png' : 'image/jpeg');
+    return reply.send(fs.createReadStream(p));
+  });
+
+  /** 허용 폴더 경로 입력의 자동 완성 (서버 컴퓨터의 폴더 이름만, 파일은 보이지 않음) */
+  server.get('/api/fs/dirs', async (req) => ({ dirs: suggestDirs(query(req, 'prefix') ?? '', os.homedir()) }));
+
+  /** 위임 설정: { accept, send, supervisorId } */
+  server.put<IdParams>('/api/agents/:id/delegation', async (req) => {
+    const b = readBody(req);
+    return { agent: manager.setDelegation(param(req, 'id'), b) };
+  });
+
+  /** 하트비트 · 보고 받을 곳: { heartbeat: {...} | null, report: { moduleId, target } | null } */
+  server.put<IdParams>('/api/agents/:id/heartbeat', async (req) => {
+    const b = readBody(req);
+    if (!('heartbeat' in b)) throw new ValidationError('heartbeat_missing', 'heartbeat 설정(또는 끄려면 null)이 필요합니다.');
+    return { agent: manager.setAutonomy(param(req, 'id'), b['heartbeat'], b['report'] ?? null) };
+  });
+
+  /** 하트비트를 지금 한 번 돌립니다. 보고할 것이 없으면 heartbeat.done 이벤트로만 알립니다. */
+  server.post<IdParams>('/api/agents/:id/heartbeat/run', async (req, reply) => {
+    const task = manager.runHeartbeat(store.getAgent(param(req, 'id')).id, true);
+    reply.status(202);
+    return { started: task !== null };
+  });
+
   server.get<IdParams>('/api/agents/:id/timeline', async (req) => {
     const agent = store.getAgent(param(req, 'id'));
     const source = query(req, 'source') ?? 'console';
@@ -213,7 +259,7 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     return { threadId: thread?.id ?? null, items: thread ? store.listTimeline(thread.id, intQuery(req, 'limit', 200, 1, 1000)) : [] };
   });
 
-  server.get<IdParams>('/api/agents/:id/threads', async (req) => ({ threads: store.listThreads(store.getAgent(param(req, 'id')).id) }));
+  server.get<IdParams>('/api/agents/:id/threads', async (req) => ({ threads: store.listVisibleThreads(store.getAgent(param(req, 'id')).id) }));
 
   server.post<IdParams>('/api/agents/:id/messages', async (req, reply) => {
     const agent = store.getAgent(param(req, 'id'));

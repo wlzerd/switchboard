@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { DelegationEditor } from '../components/Delegation';
+import { FoldersEditor } from '../components/Folders';
 import { Icon } from '../components/Icon';
 import { Avatar, ChipInput, Seg, Switch } from '../components/ui';
 import { api, ApiError, errorText } from '../lib/api';
+import { delegationProblem } from '../lib/autonomy';
+import { folderChanges, type FolderView } from '../lib/folders';
 import {
   ACTION_LABEL,
   countLimitChanges,
@@ -20,7 +24,7 @@ import {
 } from '../lib/guard';
 import { navigate } from '../lib/router';
 import { refreshOverview, toast, useApp } from '../lib/store';
-import type { AgentLimits, AgentView, GuardDef, HookOutcome, HooksResponse, Meta, Mode, Overview, PermissionDef, PermissionRule, RuleHook } from '../lib/types';
+import type { AgentLimits, AgentView, DelegationSettings, GuardDef, HookOutcome, HooksResponse, Meta, Mode, Overview, PermissionDef, PermissionRule, RuleHook } from '../lib/types';
 
 /* ───────── 권한 ───────── */
 
@@ -98,7 +102,11 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
   const [limits, setLimits] = useState<LimitDraft | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [serverError, setServerError] = useState<{ key: string | null; field: string | null; text: string } | null>(null);
+  const [serverError, setServerError] = useState<{ key: string | null; field: string | null; text: string; index?: number | null } | null>(null);
+  const agents = useApp((s) => s.overview?.agents) ?? [];
+  const [delegation, setDelegation] = useState<DelegationSettings>(agent.delegation);
+  // null 이면 저장된 값을 그대로 보여 줍니다 (저장 뒤 서버가 경로를 정리한 값으로 바뀜).
+  const [folders, setFolders] = useState<FolderView[] | null>(null);
 
   const load = useCallback(() => {
     setLoadError(null);
@@ -143,21 +151,48 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
 
   const limitKeys = Object.keys(meta.limitRules) as (keyof AgentLimits)[];
   const limitProblems = limitKeys.map((k) => [k, limitProblem(limits[k], meta.limitRules[k])] as const).filter(([, p]) => p !== null);
-  const changes = countPermissionChanges(base.permissions, perms) + countLimitChanges(base.limits, limits);
+  const permChanges = countPermissionChanges(base.permissions, perms) + countLimitChanges(base.limits, limits);
+  const delegationChanges = (['accept', 'send', 'supervisorId'] as const).filter((k) => delegation[k] !== agent.delegation[k]).length;
+  const shownFolders = folders ?? agent.folders;
+  const foldersChanged = folders ? folderChanges(agent.folders, folders) : 0;
+  const changes = permChanges + delegationChanges + foldersChanged;
+  const dlgProblem = delegationChanges > 0 ? delegationProblem(delegation, agents, agent.id) : null;
+  const problems = limitProblems.length + (dlgProblem ? 1 : 0);
   const ruleOf = (d: PermissionDef): PermissionRule => perms[d.key] ?? { mode: d.locked ? 'deny' : 'ask', scope: [], always: [] };
 
   const save = async (): Promise<void> => {
-    if (limitProblems.length > 0) return;
+    if (problems > 0) return;
     setSaving(true);
     setServerError(null);
     const numbers = Object.fromEntries(limitKeys.map((k) => [k, Number(limits[k].trim())])) as unknown as AgentLimits;
     const full: Record<string, PermissionRule> = {};
     for (const d of meta.permissionDefs) full[d.key] = ruleOf(d);
     try {
-      const r = await api<{ agent: { permissions: Record<string, PermissionRule>; limits: AgentLimits } }>(`/api/agents/${agent.id}/permissions`, { method: 'PUT', body: { permissions: full, limits: numbers } });
-      setBase({ permissions: r.agent.permissions, limits: r.agent.limits });
-      setPerms(r.agent.permissions);
-      setLimits(limitDraft(r.agent.limits));
+      if (delegationChanges > 0) {
+        try {
+          const r = await api<{ agent: { delegation: DelegationSettings } }>(`/api/agents/${agent.id}/delegation`, { method: 'PUT', body: delegation });
+          setDelegation(r.agent.delegation);
+        } catch (err) {
+          setServerError({ key: null, field: 'delegation', text: errorText(err) });
+          return;
+        }
+      }
+      if (foldersChanged > 0) {
+        try {
+          await api(`/api/agents/${agent.id}/folders`, { method: 'PUT', body: { folders: shownFolders } });
+          setFolders(null);
+        } catch (err) {
+          const index = err instanceof ApiError && typeof err.detail?.['index'] === 'number' ? err.detail['index'] : null;
+          setServerError({ key: null, field: 'folders', text: errorText(err), index });
+          return;
+        }
+      }
+      if (permChanges > 0) {
+        const r = await api<{ agent: { permissions: Record<string, PermissionRule>; limits: AgentLimits } }>(`/api/agents/${agent.id}/permissions`, { method: 'PUT', body: { permissions: full, limits: numbers } });
+        setBase({ permissions: r.agent.permissions, limits: r.agent.limits });
+        setPerms(r.agent.permissions);
+        setLimits(limitDraft(r.agent.limits));
+      }
       toast('저장됨 · 다음 도구 호출부터 적용', 'ok');
       refreshOverview(0);
     } catch (err) {
@@ -174,6 +209,8 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
   const revert = (): void => {
     setPerms(base.permissions);
     setLimits(limitDraft(base.limits));
+    setDelegation(agent.delegation);
+    setFolders(null);
     setServerError(null);
   };
 
@@ -203,6 +240,35 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
             ))}
           </div>
         ))}
+      </section>
+
+      <section className="card" aria-label="위임">
+        <div className="card-head">
+          <h2>위임</h2>
+        </div>
+        <div className="card-pad">
+          <DelegationEditor agents={agents} selfId={agent.id} value={delegation} onChange={setDelegation} error={dlgProblem ?? (serverError?.field === 'delegation' ? serverError.text : null)} />
+        </div>
+      </section>
+
+      <section className="card" aria-label="허용 폴더">
+        <div className="card-head">
+          <h2>허용 폴더</h2>
+          <span className="muted" style={{ fontSize: 12.5 }}>
+            작업 폴더 밖
+          </span>
+        </div>
+        <div className="card-pad">
+          <FoldersEditor
+            value={shownFolders}
+            onChange={(v) => {
+              setFolders(v);
+              if (serverError?.field === 'folders') setServerError(null);
+            }}
+            error={serverError?.field === 'folders' ? serverError.text : null}
+            errorIndex={serverError?.field === 'folders' ? (serverError.index ?? null) : null}
+          />
+        </div>
       </section>
 
       <section className="card" aria-label="한도">
@@ -238,11 +304,11 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
       {changes > 0 ? (
         <div className="save-bar" role="region" aria-label="저장">
           <b>변경 {changes}개</b>
-          {limitProblems.length > 0 ? <span style={{ color: 'var(--danger)', fontSize: 13 }}>입력 오류 {limitProblems.length}개를 고쳐야 저장됩니다</span> : null}
+          {problems > 0 ? <span style={{ color: 'var(--danger)', fontSize: 13 }}>입력 오류 {problems}개를 고쳐야 저장됩니다</span> : null}
           <button type="button" className="btn sm" onClick={revert}>
             되돌리기
           </button>
-          <button type="button" className="btn sm primary" disabled={saving || limitProblems.length > 0} onClick={() => void save()}>
+          <button type="button" className="btn sm primary" disabled={saving || problems > 0} onClick={() => void save()}>
             {saving ? <span className="spinner" style={{ width: 13, height: 13, borderTopColor: 'var(--onAccent)' }} /> : null}
             저장
           </button>

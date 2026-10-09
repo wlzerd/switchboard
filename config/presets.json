@@ -13,7 +13,9 @@
         "skill.create": { "mode": "deny", "scope": [], "always": [] },
         "module.create": { "mode": "deny", "scope": [], "always": [] },
         "module.install": { "mode": "deny", "scope": [], "always": [] },
-        "schedule.create": { "mode": "deny", "scope": [], "always": [] }
+        "schedule.create": { "mode": "deny", "scope": [], "always": [] },
+        "heartbeat.manage": { "mode": "deny", "scope": [], "always": [] },
+        "screen.control": { "mode": "deny", "scope": [], "always": [] }
       },
       "message": "deny",
       "limits": { "tokensPerDay": 200000, "stepsPerTask": 20, "concurrency": 1, "messagesPerMinute": 10 }
@@ -30,7 +32,9 @@
         "skill.create": { "mode": "ask", "scope": [], "always": [] },
         "module.create": { "mode": "ask", "scope": [], "always": [] },
         "module.install": { "mode": "ask", "scope": [], "always": [] },
-        "schedule.create": { "mode": "ask", "scope": [], "always": [] }
+        "schedule.create": { "mode": "ask", "scope": [], "always": [] },
+        "heartbeat.manage": { "mode": "ask", "scope": [], "always": [] },
+        "screen.control": { "mode": "ask", "scope": [], "always": [] }
       },
       "message": "allow",
       "limits": { "tokensPerDay": 300000, "stepsPerTask": 30, "concurrency": 1, "messagesPerMinute": 20 }
@@ -47,7 +51,9 @@
         "skill.create": { "mode": "allow", "scope": [], "always": [] },
         "module.create": { "mode": "allow", "scope": [], "always": [] },
         "module.install": { "mode": "ask", "scope": [], "always": [] },
-        "schedule.create": { "mode": "allow", "scope": [], "always": [] }
+        "schedule.create": { "mode": "allow", "scope": [], "always": [] },
+        "heartbeat.manage": { "mode": "allow", "scope": [], "always": [] },
+        "screen.control": { "mode": "ask", "scope": [], "always": [] }
       },
       "message": "allow",
       "limits": { "tokensPerDay": 500000, "stepsPerTask": 40, "concurrency": 2, "messagesPerMinute": 20 }

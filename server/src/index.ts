@@ -34,6 +34,7 @@ async function main(): Promise<void> {
 
   await app.registry.startChannels();
   app.scheduler.start();
+  app.manager.startHeartbeats();
 
   let closing = false;
   const shutdown = async (signal: string): Promise<void> => {

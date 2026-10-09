@@ -5,6 +5,7 @@ import type { RuleHook } from '../hooks/rules.ts';
 import type { HookAction, HookEvent } from '../hooks/types.ts';
 import type { AgentLimits } from '../limits/limits.ts';
 import type { Manifest } from '../modules/manifest.ts';
+import { parseFolders, type AllowedFolder } from '../permissions/folders.ts';
 import type { PermissionSet } from '../permissions/policy.ts';
 import type { Db, Row } from './sqlite.ts';
 
@@ -35,6 +36,32 @@ export interface ApiKeyRow {
 
 /* ───────── 에이전트 ───────── */
 
+/** 다른 에이전트와 일을 주고받는 설정 */
+export interface DelegationSettings {
+  /** 다른 에이전트가 맡기는 일을 받는지 */
+  accept: boolean;
+  /** 다른 에이전트에게 일을 맡길 수 있는지 */
+  send: boolean;
+  /** 권한이 없을 때 일을 넘길 상위 에이전트 */
+  supervisorId: string | null;
+}
+
+/** 정해진 간격으로 스스로 점검하는 설정. 보고할 것이 있을 때만 알립니다. */
+export interface HeartbeatSettings {
+  enabled: boolean;
+  everyMinutes: number;
+  /** 'HH:MM-HH:MM' (서버 TZ). null 이면 하루 종일 */
+  activeHours: string | null;
+  checklist: string;
+}
+
+export interface ReportTarget {
+  moduleId: string;
+  target: string;
+}
+
+export const DEFAULT_DELEGATION: DelegationSettings = { accept: false, send: false, supervisorId: null };
+
 export interface AgentRow {
   id: string;
   name: string;
@@ -47,6 +74,13 @@ export interface AgentRow {
   permissions: PermissionSet;
   limits: AgentLimits;
   paused: boolean;
+  delegation: DelegationSettings;
+  heartbeat: HeartbeatSettings | null;
+  heartbeatLastAt: number | null;
+  /** 하트비트 · 자동 알림에서 보고를 보낼 채널 (없으면 웹 화면에만) */
+  report: ReportTarget | null;
+  /** 작업 폴더 밖에서 쓸 수 있게 사용자가 허락한 폴더 */
+  folders: AllowedFolder[];
   createdAt: number;
   updatedAt: number;
 }
@@ -111,7 +145,7 @@ export interface MessageRow {
   createdAt: number;
 }
 
-export type TimelineKind = 'user' | 'agent' | 'tool' | 'approval' | 'hook' | 'block' | 'skill' | 'system' | 'error';
+export type TimelineKind = 'user' | 'agent' | 'tool' | 'approval' | 'hook' | 'block' | 'skill' | 'system' | 'error' | 'delegate' | 'report' | 'screen';
 
 export interface TimelineRow {
   id: number;
@@ -138,10 +172,14 @@ export interface TaskRow {
   agentId: string;
   threadId: string;
   title: string;
-  origin: 'console' | 'channel' | 'schedule' | 'request';
+  origin: 'console' | 'channel' | 'schedule' | 'request' | 'heartbeat' | 'delegation';
   status: TaskStatus;
   steps: TaskStep[];
   error: string | null;
+  /** 조용한 작업: 보고할 것이 생기기 전까지 화면에 나오지 않습니다 */
+  quiet: boolean;
+  /** 이 작업을 맡긴 에이전트 */
+  delegatedBy: string | null;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -278,9 +316,18 @@ export class Store {
       permissions: parseJson<PermissionSet>(r['permissions'], `agents.permissions (id=${id})`),
       limits: parseJson<AgentLimits>(r['limits'], `agents.limits (id=${id})`),
       paused: num(r, 'paused') === 1,
+      delegation: { ...DEFAULT_DELEGATION, ...parseJson<Partial<DelegationSettings>>(r['delegation'], `agents.delegation (id=${id})`) },
+      heartbeat: r['heartbeat'] ? parseJson<HeartbeatSettings>(r['heartbeat'], `agents.heartbeat (id=${id})`) : null,
+      heartbeatLastAt: numOrNull(r, 'heartbeat_last_at'),
+      report: r['report'] ? parseJson<ReportTarget>(r['report'], `agents.report (id=${id})`) : null,
+      folders: parseFolders(parseJson<unknown>(r['folders'] ?? '[]', `agents.folders (id=${id})`)),
       createdAt: num(r, 'created_at'),
       updatedAt: num(r, 'updated_at'),
     };
+  }
+  findAgent(id: string): AgentRow | null {
+    const r = this.db.get('SELECT * FROM agents WHERE id = :id', { id });
+    return r ? this.agentRow(r) : null;
   }
   listAgents(): AgentRow[] {
     return this.db.all('SELECT * FROM agents ORDER BY created_at').map((r) => this.agentRow(r));
@@ -294,14 +341,16 @@ export class Store {
     const r = this.db.get('SELECT * FROM agents WHERE name = :name', { name });
     return r ? this.agentRow(r) : null;
   }
-  insertAgent(a: Omit<AgentRow, 'createdAt' | 'updatedAt'>): AgentRow {
+  insertAgent(a: Omit<AgentRow, 'createdAt' | 'updatedAt' | 'heartbeat' | 'heartbeatLastAt' | 'report' | 'folders'> & Partial<Pick<AgentRow, 'heartbeat' | 'heartbeatLastAt' | 'report' | 'folders'>>): AgentRow {
     const now = Date.now();
     this.db.run(
-      `INSERT INTO agents (id, name, color, role, model, effort, key_id, preset, permissions, limits, paused, created_at, updated_at)
-       VALUES (:id, :name, :color, :role, :model, :effort, :keyId, :preset, :permissions, :limits, :paused, :now, :now)`,
+      `INSERT INTO agents (id, name, color, role, model, effort, key_id, preset, permissions, limits, paused, delegation, heartbeat, heartbeat_last_at, report, folders, created_at, updated_at)
+       VALUES (:id, :name, :color, :role, :model, :effort, :keyId, :preset, :permissions, :limits, :paused, :delegation, :heartbeat, :heartbeatLastAt, :report, :folders, :now, :now)`,
       {
         id: a.id, name: a.name, color: a.color, role: a.role, model: a.model, effort: a.effort, keyId: a.keyId, preset: a.preset,
-        permissions: JSON.stringify(a.permissions), limits: JSON.stringify(a.limits), paused: a.paused ? 1 : 0, now,
+        permissions: JSON.stringify(a.permissions), limits: JSON.stringify(a.limits), paused: a.paused ? 1 : 0,
+        delegation: JSON.stringify(a.delegation), heartbeat: a.heartbeat ? JSON.stringify(a.heartbeat) : null, heartbeatLastAt: a.heartbeatLastAt ?? null,
+        report: a.report ? JSON.stringify(a.report) : null, folders: JSON.stringify(a.folders ?? []), now,
       },
     );
     return this.getAgent(a.id);
@@ -311,13 +360,20 @@ export class Store {
     const next = { ...cur, ...patch };
     this.db.run(
       `UPDATE agents SET name = :name, color = :color, role = :role, model = :model, effort = :effort, key_id = :keyId, preset = :preset,
-       permissions = :permissions, limits = :limits, paused = :paused, updated_at = :now WHERE id = :id`,
+       permissions = :permissions, limits = :limits, paused = :paused, delegation = :delegation, heartbeat = :heartbeat,
+       heartbeat_last_at = :heartbeatLastAt, report = :report, folders = :folders, updated_at = :now WHERE id = :id`,
       {
         id, name: next.name, color: next.color, role: next.role, model: next.model, effort: next.effort, keyId: next.keyId, preset: next.preset,
-        permissions: JSON.stringify(next.permissions), limits: JSON.stringify(next.limits), paused: next.paused ? 1 : 0, now: Date.now(),
+        permissions: JSON.stringify(next.permissions), limits: JSON.stringify(next.limits), paused: next.paused ? 1 : 0,
+        delegation: JSON.stringify(next.delegation), heartbeat: next.heartbeat ? JSON.stringify(next.heartbeat) : null,
+        heartbeatLastAt: next.heartbeatLastAt, report: next.report ? JSON.stringify(next.report) : null, folders: JSON.stringify(next.folders), now: Date.now(),
       },
     );
     return this.getAgent(id);
+  }
+  /** 하트비트를 돌린 시각만 바꿉니다 (updated_at 은 그대로: 설정 변경이 아님). */
+  setHeartbeatLastAt(id: string, at: number): void {
+    this.db.run('UPDATE agents SET heartbeat_last_at = :at WHERE id = :id', { id, at });
   }
   deleteAgent(id: string): void {
     const r = this.db.run('DELETE FROM agents WHERE id = :id', { id });
@@ -462,6 +518,12 @@ export class Store {
   listThreads(agentId: string): ThreadRow[] {
     return this.db.all('SELECT * FROM threads WHERE agent_id = :agentId ORDER BY updated_at DESC', { agentId }).map((r) => this.threadRow(r));
   }
+  /** 화면에 보일 것이 있는 대화방만 (조용한 작업이 아무것도 보고하지 않으면 빈 방이 남으므로 숨김) */
+  listVisibleThreads(agentId: string): ThreadRow[] {
+    return this.db
+      .all('SELECT * FROM threads t WHERE t.agent_id = :agentId AND EXISTS (SELECT 1 FROM timeline l WHERE l.thread_id = t.id) ORDER BY t.updated_at DESC', { agentId })
+      .map((r) => this.threadRow(r));
+  }
   setThreadHash(id: string, hash: string): void {
     this.db.run('UPDATE threads SET frozen_hash = :hash, updated_at = :now WHERE id = :id', { id, hash, now: Date.now() });
   }
@@ -479,6 +541,14 @@ export class Store {
     return this.db
       .all('SELECT * FROM messages WHERE thread_id = :threadId ORDER BY id', { threadId })
       .map((r) => ({ id: num(r, 'id'), threadId, role: str(r, 'role') as MessageRow['role'], content: parseJson(r['content'], `messages.content (id=${num(r, 'id')})`), createdAt: num(r, 'created_at') }));
+  }
+  /** 지금까지의 마지막 메시지 id (없으면 0). 조용한 작업이 아무것도 보고하지 않으면 이 뒤를 지웁니다. */
+  lastMessageId(threadId: string): number {
+    const r = this.db.get('SELECT COALESCE(MAX(id), 0) AS id FROM messages WHERE thread_id = :threadId', { threadId });
+    return r ? num(r, 'id') : 0;
+  }
+  deleteMessagesAfter(threadId: string, afterId: number): number {
+    return this.db.run('DELETE FROM messages WHERE thread_id = :threadId AND id > :afterId', { threadId, afterId }).changes;
   }
   replaceMessages(threadId: string, messages: { role: 'user' | 'assistant'; content: unknown }[]): void {
     this.db.tx(() => {
@@ -498,6 +568,14 @@ export class Store {
   updateTimeline(id: number, data: Record<string, unknown>): void {
     this.db.run('UPDATE timeline SET data = :data WHERE id = :id', { id, data: JSON.stringify(data) });
   }
+  lastTimelineId(threadId: string): number | null {
+    const r = this.db.get('SELECT MAX(id) AS id FROM timeline WHERE thread_id = :threadId', { threadId });
+    return r && typeof r['id'] === 'number' ? r['id'] : null;
+  }
+  findTimeline(id: number): TimelineRow | null {
+    const r = this.db.get('SELECT * FROM timeline WHERE id = :id', { id });
+    return r ? { id: num(r, 'id'), threadId: str(r, 'thread_id'), taskId: strOrNull(r, 'task_id'), kind: str(r, 'kind') as TimelineKind, data: parseJson(r['data'], `timeline.data (id=${id})`), createdAt: num(r, 'created_at') } : null;
+  }
   listTimeline(threadId: string, limit: number): TimelineRow[] {
     return this.db
       .all('SELECT * FROM (SELECT * FROM timeline WHERE thread_id = :threadId ORDER BY id DESC LIMIT :limit) ORDER BY id', { threadId, limit })
@@ -514,16 +592,31 @@ export class Store {
     return {
       id, agentId: str(r, 'agent_id'), threadId: str(r, 'thread_id'), title: str(r, 'title'), origin: str(r, 'origin') as TaskRow['origin'],
       status: str(r, 'status') as TaskStatus, steps: parseJson<TaskStep[]>(r['steps'], `tasks.steps (id=${id})`), error: strOrNull(r, 'error'),
+      quiet: num(r, 'quiet') === 1, delegatedBy: strOrNull(r, 'delegated_by'),
       createdAt: num(r, 'created_at'), startedAt: numOrNull(r, 'started_at'), finishedAt: numOrNull(r, 'finished_at'),
     };
   }
-  insertTask(t: Pick<TaskRow, 'agentId' | 'threadId' | 'title' | 'origin'>): TaskRow {
+  insertTask(t: Pick<TaskRow, 'agentId' | 'threadId' | 'title' | 'origin'> & Partial<Pick<TaskRow, 'quiet' | 'delegatedBy'>>): TaskRow {
     const id = randomId('task');
     this.db.run(
-      "INSERT INTO tasks (id, agent_id, thread_id, title, origin, status, steps, error, created_at) VALUES (:id, :agentId, :threadId, :title, :origin, 'queued', '[]', NULL, :now)",
-      { id, agentId: t.agentId, threadId: t.threadId, title: t.title, origin: t.origin, now: Date.now() },
+      "INSERT INTO tasks (id, agent_id, thread_id, title, origin, status, steps, error, quiet, delegated_by, created_at) VALUES (:id, :agentId, :threadId, :title, :origin, 'queued', '[]', NULL, :quiet, :delegatedBy, :now)",
+      { id, agentId: t.agentId, threadId: t.threadId, title: t.title, origin: t.origin, quiet: t.quiet ? 1 : 0, delegatedBy: t.delegatedBy ?? null, now: Date.now() },
     );
     return this.getTask(id);
+  }
+  /** 조용한 작업이 보고를 하게 되면 화면에 보이는 작업으로 바꿉니다. */
+  revealTask(id: string): TaskRow {
+    this.db.run('UPDATE tasks SET quiet = 0 WHERE id = :id', { id });
+    return this.getTask(id);
+  }
+  deleteTask(id: string): void {
+    this.db.run('DELETE FROM tasks WHERE id = :id', { id });
+  }
+  /** 진행 중인 위임: 맡긴 에이전트 → 맡은 에이전트 */
+  activeDelegations(): { from: string; to: string }[] {
+    return this.db
+      .all("SELECT DISTINCT delegated_by AS from_id, agent_id AS to_id FROM tasks WHERE delegated_by IS NOT NULL AND status IN ('queued','running','waiting')")
+      .map((r) => ({ from: str(r, 'from_id'), to: str(r, 'to_id') }));
   }
   getTask(id: string): TaskRow {
     const r = this.db.get('SELECT * FROM tasks WHERE id = :id', { id });
@@ -540,14 +633,15 @@ export class Store {
     return this.getTask(id);
   }
   listTasks(agentId: string, limit: number): TaskRow[] {
-    return this.db.all('SELECT * FROM tasks WHERE agent_id = :agentId ORDER BY created_at DESC LIMIT :limit', { agentId, limit }).map((r) => this.taskRow(r));
+    return this.db.all('SELECT * FROM tasks WHERE agent_id = :agentId AND quiet = 0 ORDER BY created_at DESC LIMIT :limit', { agentId, limit }).map((r) => this.taskRow(r));
   }
   latestTask(agentId: string): TaskRow | null {
-    const r = this.db.get("SELECT * FROM tasks WHERE agent_id = :agentId ORDER BY CASE WHEN status IN ('running','waiting') THEN 0 ELSE 1 END, created_at DESC LIMIT 1", { agentId });
+    const r = this.db.get("SELECT * FROM tasks WHERE agent_id = :agentId AND quiet = 0 ORDER BY CASE WHEN status IN ('running','waiting') THEN 0 ELSE 1 END, created_at DESC LIMIT 1", { agentId });
     return r ? this.taskRow(r) : null;
   }
-  /** 서버가 꺼질 때 실행 중이던 작업을 정리합니다. */
+  /** 서버가 꺼질 때 실행 중이던 작업을 정리합니다. 아무것도 보고하지 않은 조용한 작업은 흔적 없이 지웁니다. */
   failUnfinishedTasks(reason: string): number {
+    this.db.run("DELETE FROM tasks WHERE quiet = 1 AND status IN ('queued','running','waiting')");
     return this.db.run("UPDATE tasks SET status = 'failed', error = :reason, finished_at = :now WHERE status IN ('queued','running','waiting')", { reason, now: Date.now() }).changes;
   }
 

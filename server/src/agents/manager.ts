@@ -1,11 +1,14 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { EFFORT_LEVELS, type Effort } from '../anthropic/models.ts';
 import type { AnthropicService } from '../anthropic/service.ts';
 import type { ApprovalService } from '../approvals/service.ts';
 import type { Config } from '../config/env.ts';
 import { randomId } from '../crypto/secrets.ts';
-import type { AgentModuleRow, AgentRow, ModuleRow, Store, TaskRow } from '../db/store.ts';
-import { ConflictError, ModuleError, PermissionDeniedError, ValidationError } from '../errors.ts';
+import type { AgentModuleRow, AgentRow, ModuleRow, ReportTarget, Store, TaskRow } from '../db/store.ts';
+import { ConflictError, ModuleError, NotFoundError, PermissionDeniedError, ValidationError } from '../errors.ts';
 import type { AgentLiveStatus, EventBus } from '../events/bus.ts';
 import type { GuardState } from '../guards/guards.ts';
 import type { HookEngine } from '../hooks/engine.ts';
@@ -15,13 +18,29 @@ import { TOOL_NAME_RE } from '../modules/manifest.ts';
 import type { InboundMessage } from '../modules/protocol.ts';
 import type { ModuleRegistry } from '../modules/registry.ts';
 import type { SourceFile } from '../modules/static-check.ts';
+import { folderLabel, validateFolders } from '../permissions/folders.ts';
 import { addAlways, BASE_PERMISSIONS, evaluatePermission, messagePermission, validatePermissionSet, type PermissionDef, type PermissionSet } from '../permissions/policy.ts';
 import type { SchedulerService } from '../scheduler/service.ts';
-import { builtinTools, type SkillInput, type ToolServices } from '../tools/builtin.ts';
+import { builtinTools, type DelegateInput, type HeartbeatToolInput, type SkillInput, type ToolServices } from '../tools/builtin.ts';
 import type { ToolEnv } from '../tools/types.ts';
+import {
+  delegationProblem,
+  delegationRequestText,
+  delegationResultText,
+  heartbeatDue,
+  heartbeatPrompt,
+  parseReportTarget,
+  quietPreamble,
+  validateDelegation,
+  validateHeartbeat,
+} from './autonomy.ts';
 import { ToolExecutor } from './executor.ts';
+import { ScreenLocks } from './screen.ts';
 import { permissionsFromPreset, type Preset } from './presets.ts';
-import { AgentRuntime, type TaskInput } from './runtime.ts';
+import { AgentRuntime, type TaskEnd, type TaskInput } from './runtime.ts';
+
+const HEARTBEAT_TICK_MS = 15_000;
+const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
 const NAME_RE = /^[\p{L}\p{N} _-]+$/u;
 const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
@@ -69,6 +88,8 @@ export interface ManagerDeps {
   guardState: GuardState;
   scheduler: SchedulerService;
   presets: Map<string, Preset>;
+  /** 기본 금지 조항의 비밀 폴더 이름 (허용 폴더로 둘 수 없음) */
+  secretDirs: readonly string[];
 }
 
 export interface AgentInput {
@@ -80,6 +101,7 @@ export interface AgentInput {
   effort: unknown;
   preset: unknown;
   modules: unknown;
+  delegation?: unknown;
 }
 
 export class AgentManager {
@@ -87,8 +109,13 @@ export class AgentManager {
   private readonly runtimes = new Map<string, AgentRuntime>();
   private readonly slots: Semaphore;
   private readonly serverToolLevel = new Map<string, number>();
+  /** 화면 제어 도구 묶음을 받지 않는 모델 (한 번 거절되면 그 모델에는 빼고 보냄) */
+  private readonly noComputer = new Set<string>();
+  /** 화면 하나는 한 번에 한 작업만 */
+  readonly screenLocks = new ScreenLocks();
   readonly executor: ToolExecutor;
   private readonly builtins;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(deps: ManagerDeps) {
     this.d = deps;
@@ -101,6 +128,8 @@ export class AgentManager {
       createSkill: (agent, env, input) => this.createSkill(agent, env, input),
       createModule: (agent, env, files) => this.createModule(agent, env, files),
       schedules: deps.scheduler,
+      delegate: (agent, env, input) => this.delegate(agent, env, input),
+      heartbeat: (agent, env, input) => this.setHeartbeatFromTool(agent, env, input),
     };
     this.builtins = builtinTools(services);
     for (const t of this.builtins) deps.registry.reservedToolNames.add(t.name);
@@ -113,6 +142,7 @@ export class AgentManager {
       registry: deps.registry,
       builtins: new Map(this.builtins.map((t) => [t.name, t])),
       defs: () => this.permissionDefs(),
+      screenLocks: this.screenLocks,
     });
   }
 
@@ -120,9 +150,9 @@ export class AgentManager {
     return this.builtins.map((t) => t.name);
   }
 
-  /** 권한 항목: 고정 항목 + 설치된 채널 모듈별 전송 권한 */
+  /** 권한 항목: 고정 항목 + 설치된 채널 모듈별 전송 권한 (받기만 하는 채널은 제외) */
   permissionDefs(): PermissionDef[] {
-    const channels = this.d.store.listModules('module').filter((m) => m.manifest.channel && m.status !== 'rejected');
+    const channels = this.d.store.listModules('module').filter((m) => m.manifest.channel && m.manifest.channel.send !== false && m.status !== 'rejected');
     return [...BASE_PERMISSIONS, ...channels.map((m) => messagePermission(m.id, m.manifest.name))];
   }
 
@@ -181,9 +211,11 @@ export class AgentManager {
         defs: () => this.permissionDefs(),
         guardState: this.d.guardState,
         serverToolLevel: this.serverToolLevel,
+        noComputer: this.noComputer,
         deliver: (agent, env, moduleId, target, text) => this.deliver(agent, env, moduleId, target, text),
         acquireSlot: (signal) => this.slots.acquire(signal),
         onFinished: () => this.pumpAll(),
+        onTaskEnd: (end) => this.onTaskEnd(end),
       });
       this.runtimes.set(agentId, rt);
     }
@@ -240,7 +272,7 @@ export class AgentManager {
   private checkLinks(raw: unknown): { moduleId: string; config: AgentModuleRow['config'] }[] {
     if (raw === undefined || raw === null) return [];
     if (!Array.isArray(raw)) throw new ValidationError('agent_modules_type', '연결할 모듈 목록은 배열이어야 합니다.');
-    return raw.map((l, i) => {
+    const links = raw.map((l, i) => {
       const item = l as { moduleId?: unknown; targets?: unknown; trigger?: unknown };
       if (typeof item.moduleId !== 'string') throw new ValidationError('agent_module_id', `${i + 1}번째 연결의 moduleId 가 없습니다.`);
       const m = this.d.store.getModule(item.moduleId);
@@ -250,6 +282,11 @@ export class AgentManager {
       const config: AgentModuleRow['config'] = { targets, trigger };
       return { moduleId: m.id, config };
     });
+    const screens = links.filter((l) => this.d.store.getModule(l.moduleId).manifest.computer);
+    if (screens.length > 1) {
+      throw new ValidationError('agent_computer_multi', `화면 제어 모듈은 에이전트마다 하나만 연결할 수 있습니다. 지금 ${screens.length}개입니다.`);
+    }
+    return links;
   }
 
   async createAgent(input: AgentInput): Promise<AgentRow> {
@@ -265,6 +302,7 @@ export class AgentManager {
     const preset = this.d.presets.get(presetId === 'custom' ? 'helper' : presetId);
     if (!preset) throw new ValidationError('agent_preset', `권한 프리셋 '${presetId}'이(가) 없습니다. 가능한 값: ${[...this.d.presets.keys(), 'custom'].join(', ')}`);
     const links = this.checkLinks(input.modules);
+    const delegation = validateDelegation(input.delegation, null, this.d.store.listAgents());
 
     const id = randomId('agt', 6);
     const agent = this.d.store.db.tx(() => {
@@ -280,6 +318,7 @@ export class AgentManager {
         permissions: permissionsFromPreset(preset, this.permissionDefs()),
         limits: preset.limits,
         paused: false,
+        delegation,
       });
       for (const l of links) this.d.store.connectModule(a.id, l.moduleId, l.config);
       return a;
@@ -347,9 +386,245 @@ export class AgentManager {
     const row = this.d.store.getAgent(id);
     this.runtimeFor(id).cancelAll('에이전트를 삭제해 작업을 취소했습니다.');
     this.runtimes.delete(id);
-    this.d.store.deleteAgent(id);
+    this.d.store.db.tx(() => {
+      // 이 에이전트를 상위로 둔 에이전트들은 상위 없음으로 바꿉니다.
+      for (const a of this.d.store.listAgents()) {
+        if (a.delegation.supervisorId === id) this.d.store.updateAgent(a.id, { delegation: { ...a.delegation, supervisorId: null } });
+      }
+      this.d.store.deleteAgent(id);
+    });
+    // 화면 제어 기록(스크린샷)도 함께 지웁니다.
+    fs.rmSync(path.join(this.d.config.dataDir, 'screens', id), { recursive: true, force: true });
     this.d.bus.activity({ type: 'agent.deleted', category: 'agent', tone: 'agent', who: row.name, text: '삭제됨', agentId: null });
     this.d.bus.emit({ type: 'graph.changed' });
+  }
+
+  /* ───────── 위임 설정 · 하트비트 ───────── */
+
+  setDelegation(id: string, raw: unknown): AgentRow {
+    this.d.store.getAgent(id);
+    const delegation = validateDelegation(raw, id, this.d.store.listAgents());
+    const row = this.d.store.updateAgent(id, { delegation });
+    const parts = [`받기 ${delegation.accept ? '허용' : '미허용'}`, `보내기 ${delegation.send ? '허용' : '미허용'}`];
+    if (delegation.supervisorId) parts.push(`상위 ${this.d.store.findAgent(delegation.supervisorId)?.name ?? delegation.supervisorId}`);
+    this.d.bus.activity({ type: 'agent.delegation', category: 'agent', tone: 'pass', who: row.name, text: `위임 설정 · ${parts.join(' · ')}`, agentId: id });
+    this.d.bus.emit({ type: 'graph.changed' });
+    return row;
+  }
+
+  /** 허용 폴더: 사용자가 화면에서만 정합니다 (에이전트에게는 바꾸는 도구가 없음). */
+  setFolders(id: string, raw: unknown): AgentRow {
+    this.d.store.getAgent(id);
+    const home = os.homedir();
+    const folders = validateFolders(raw, { home, rootDir: this.d.config.rootDir, dataDir: this.d.config.dataDir, platform: process.platform, secretDirs: this.d.secretDirs });
+    const row = this.d.store.updateAgent(id, { folders });
+    this.d.bus.activity({
+      type: 'agent.folders',
+      category: 'agent',
+      tone: 'pass',
+      who: row.name,
+      text: folders.length === 0 ? '허용 폴더 없음 · 작업 폴더만' : `허용 폴더 ${folders.length}개 · ${folders.map((f) => folderLabel(f, home)).join(', ').slice(0, 160)}`,
+      agentId: id,
+    });
+    this.d.bus.emit({ type: 'graph.changed' });
+    return row;
+  }
+
+  /** 보고 받을 곳: 메시지를 보낼 수 있는 채널 모듈이어야 합니다. */
+  private checkReportTarget(raw: unknown): ReportTarget | null {
+    const r = parseReportTarget(raw);
+    if (!r) return null;
+    const mod = this.d.store.findModule(r.moduleId);
+    if (!mod) throw new ValidationError('report_module_missing', `보고 채널 모듈 '${r.moduleId}'이(가) 없습니다.`);
+    if (!mod.manifest.channel || mod.manifest.channel.send === false) {
+      throw new ValidationError('report_module_cannot_send', `'${mod.manifest.name}'은(는) 메시지를 보낼 수 없는 모듈이라 보고 받을 곳으로 쓸 수 없습니다. Discord · Telegram 같은 채널을 고르세요.`);
+    }
+    return r;
+  }
+
+  /** 하트비트 · 보고 받을 곳 설정 (화면에서). 켜거나 간격을 바꾸면 지금부터 한 간격 뒤에 첫 점검을 합니다. */
+  setAutonomy(id: string, rawHeartbeat: unknown, rawReport: unknown): AgentRow {
+    const cur = this.d.store.getAgent(id);
+    const hb = rawHeartbeat === null ? null : validateHeartbeat(rawHeartbeat, this.d.config.heartbeatMinMinutes);
+    const report = this.checkReportTarget(rawReport);
+    const restart = Boolean(hb?.enabled) && (!cur.heartbeat?.enabled || cur.heartbeat.everyMinutes !== hb?.everyMinutes);
+    const row = this.d.store.updateAgent(id, { heartbeat: hb, report, heartbeatLastAt: restart ? Date.now() : cur.heartbeatLastAt });
+    if (Boolean(cur.heartbeat?.enabled) !== Boolean(hb?.enabled) || restart) {
+      this.d.bus.activity({ type: 'agent.heartbeat', category: 'agent', tone: 'pass', who: row.name, text: hb?.enabled ? `하트비트 켬 · ${hb.everyMinutes}분마다${hb.activeHours ? ` (${hb.activeHours})` : ''}` : '하트비트 끔', agentId: id });
+    }
+    this.d.bus.emit({ type: 'graph.changed' });
+    return row;
+  }
+
+  /** heartbeat_set 도구: 에이전트가 사용자의 "지켜보다가 알려줘" 요청을 하트비트로 등록합니다. */
+  setHeartbeatFromTool(agent: AgentRow, env: ToolEnv, input: HeartbeatToolInput): string {
+    const cur = agent.heartbeat;
+    const merged = {
+      enabled: input.enabled,
+      everyMinutes: input.everyMinutes ?? cur?.everyMinutes ?? Math.max(60, this.d.config.heartbeatMinMinutes),
+      activeHours: input.activeHours === undefined ? (cur?.activeHours ?? null) : input.activeHours || null,
+      checklist: input.checklist ?? cur?.checklist ?? '',
+    };
+    // 보고 받을 곳이 없으면 지금 대화한 채널로 보냅니다.
+    const report = agent.report ?? (env.reply && this.d.store.findModule(env.reply.moduleId)?.manifest.channel?.send !== false ? env.reply : null);
+    const row = this.setAutonomy(agent.id, merged, report);
+    const hb = row.heartbeat;
+    const where = row.report ? `${this.d.store.findModule(row.report.moduleId)?.manifest.name ?? row.report.moduleId} ${row.report.target}` : '웹 화면';
+    if (!hb?.enabled) {
+      return hb?.checklist
+        ? `알릴 조건을 저장했습니다 · 보고 받을 곳: ${where}. 하트비트(주기 점검)는 꺼져 있어, 연결된 모듈의 자동 알림(새 메일 등)을 받을 때 이 조건으로 판단합니다.`
+        : '하트비트를 껐습니다.';
+    }
+    return `하트비트를 켰습니다: ${hb.everyMinutes}분마다${hb.activeHours ? ` (${hb.activeHours} 사이)` : ''} 점검 · 보고 받을 곳: ${where}. 알릴 것이 없으면 조용히 있고, 알릴 것이 있을 때만 보고합니다.`;
+  }
+
+  /**
+   * 하트비트 한 번. 조용한 작업으로 넣어, 알릴 것이 있을 때만 화면과 보고 채널에 나타납니다.
+   * 자동 실행은 다른 작업 중이면 건너뛰고(다음 차례에 다시 봄), 직접 실행(manual)은 이유를 알려 줍니다.
+   */
+  runHeartbeat(agentId: string, manual: boolean): TaskRow | null {
+    const agent = this.d.store.getAgent(agentId);
+    const hb = agent.heartbeat;
+    if (!hb || hb.checklist.trim() === '') {
+      if (manual) throw new ValidationError('heartbeat_empty', `'${agent.name}'에 점검 · 알릴 조건이 없습니다. 먼저 무엇을 확인하고 언제 알릴지 적고 저장하세요.`);
+      return null;
+    }
+    if (agent.paused) {
+      if (manual) throw new ConflictError('agent_paused', `'${agent.name}'이(가) 일시정지 중이라 점검하지 않았습니다. 재개한 뒤 다시 누르세요.`);
+      return null;
+    }
+    if (this.runtimeFor(agentId).busy()) {
+      if (manual) throw new ConflictError('heartbeat_busy', `'${agent.name}'이(가) 다른 작업 중이라 지금은 점검하지 않았습니다. 작업이 끝난 뒤 다시 누르세요.`);
+      return null;
+    }
+    this.d.store.setHeartbeatLastAt(agentId, Date.now());
+    return this.enqueue({
+      agentId,
+      source: 'heartbeat',
+      sourceLabel: '하트비트',
+      origin: 'heartbeat',
+      text: heartbeatPrompt(hb.checklist),
+      reply: null,
+      title: '하트비트',
+      quiet: true,
+      trigger: manual ? '하트비트 점검 (직접 실행)' : '하트비트 점검',
+      reportTo: agent.report,
+      manual,
+    });
+  }
+
+  /** 15초마다: 차례가 된 에이전트의 하트비트를 넣습니다. */
+  tickHeartbeats(now = Date.now()): void {
+    const tz = process.env['TZ'] || 'UTC';
+    for (const a of this.d.store.listAgents()) {
+      if (!heartbeatDue(a.heartbeat, a.heartbeatLastAt, now, tz, { paused: a.paused, busy: this.runtimeFor(a.id).busy() })) continue;
+      try {
+        this.runHeartbeat(a.id, false);
+      } catch (err) {
+        this.d.log.warn('하트비트를 넣지 못했습니다', { agent: a.name, error: (err as Error).message });
+      }
+    }
+  }
+
+  startHeartbeats(): void {
+    if (this.heartbeatTimer) return;
+    this.heartbeatTimer = setInterval(() => this.tickHeartbeats(), HEARTBEAT_TICK_MS);
+    this.heartbeatTimer.unref();
+  }
+
+  stopHeartbeats(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
+  /* ───────── 에이전트 간 위임 ───────── */
+
+  /**
+   * delegate_task 도구: 다른 에이전트에게 일을 맡깁니다. 결과는 기다리지 않고(동시 작업 자리를 붙잡지 않도록)
+   * 맡은 쪽이 끝나면 onTaskEnd 가 결과를 맡긴 쪽 대화로 돌려보냅니다.
+   */
+  async delegate(agent: AgentRow, env: ToolEnv, input: DelegateInput): Promise<string> {
+    const toName = input.to.trim();
+    const target = this.d.store.findAgentByName(toName);
+    const problem = delegationProblem({ from: agent, to: target, toName, chain: env.chain, maxDepth: this.d.config.delegationMaxDepth });
+    if (problem) throw new ValidationError('delegation_rejected', problem);
+    const to = target as AgentRow;
+    const task = input.task.trim();
+    if (task.length < 5) throw new ValidationError('delegation_task', '맡길 일을 5자 이상으로, 그 에이전트가 이 대화를 몰라도 알 수 있게 적으세요.');
+    const reason = input.reason.trim().slice(0, 500);
+
+    // 맡긴 쪽 대화에 남는 위임 카드 (결과가 오면 상태가 바뀜)
+    const card = env.sink.timeline('delegate', { to: to.id, toName: to.name, task: task.slice(0, 500), reason: reason.slice(0, 300), status: 'sent' });
+    const row = this.enqueue({
+      agentId: to.id,
+      source: `delegation:${agent.id}`,
+      sourceLabel: `위임 · ${agent.name}`,
+      origin: 'delegation',
+      text: delegationRequestText(agent.name, task, reason),
+      reply: null,
+      title: `위임 · ${oneLine(task).slice(0, 50)}`,
+      chain: [...env.chain, agent.id],
+      delegation: {
+        fromAgentId: agent.id,
+        cardId: card?.id ?? null,
+        back: { source: env.source, sourceLabel: env.sourceLabel, reply: env.reply, quiet: env.quiet, reportTo: env.reportTo, chain: env.chain, delegation: env.delegation },
+      },
+    });
+    // 이 작업이 누군가에게서 맡은 일이었다면, 결과를 돌려줄 의무는 위임 결과를 받는 후속 작업으로 넘어갑니다.
+    env.deferred = true;
+    env.sink.emit({ type: 'edge.pulse', from: agent.id, to: to.id, kind: 'delegate' });
+    env.sink.activity({ type: 'delegation.sent', category: 'agent', tone: 'agent', who: agent.name, text: `${to.name}에게 위임 · ${oneLine(task).slice(0, 80)}`, agentId: agent.id });
+    this.d.bus.emit({ type: 'graph.changed' });
+    const paused = to.paused ? ` '${to.name}'은(는) 지금 일시정지 상태라 재개된 뒤 처리합니다.` : '';
+    const next = env.quiet ? '지금은 NO_REPORT 로 답하고, 결과가 오면 그때 보고할지 판단하세요.' : '지금은 사용자에게 맡겼다는 것만 짧게 알리세요.';
+    return `'${to.name}'에게 맡겼습니다 (작업 ${row.id}).${paused} 결과는 끝나는 대로 이 대화로 전달됩니다. ${next}`;
+  }
+
+  /** 작업이 끝날 때: 직접 누른 하트비트 알림, 위임 카드 갱신, 맡긴 쪽으로 결과 돌려보내기 */
+  private onTaskEnd(end: TaskEnd): void {
+    const { input } = end;
+    // 이 작업이 잡고 있던 화면을 풉니다.
+    if (this.screenLocks.releaseTask(end.task.id).length > 0) this.d.bus.emit({ type: 'graph.changed' });
+    if (input.origin === 'heartbeat' && input.manual) {
+      this.d.bus.emit({ type: 'heartbeat.done', agentId: input.agentId, reported: !end.silent, error: end.status === 'failed' ? end.error : null });
+    }
+    const del = input.delegation;
+    if (!del || end.deferred) return;
+    const from = this.d.store.findAgent(del.fromAgentId);
+    const toName = this.d.store.findAgent(input.agentId)?.name ?? '삭제된 에이전트';
+    const label = end.status === 'done' ? '완료' : end.status === 'failed' ? '실패' : '취소됨';
+
+    if (del.cardId !== null) {
+      const card = this.d.store.findTimeline(del.cardId);
+      if (card) {
+        const summary = oneLine(end.status === 'done' ? end.finalText : (end.error ?? '')).slice(0, 300);
+        const data = { ...card.data, status: end.status, result: summary };
+        this.d.store.updateTimeline(card.id, data);
+        this.d.bus.emit({ type: 'timeline.update', agentId: del.fromAgentId, item: { ...card, data } });
+      }
+    }
+    this.d.bus.emit({ type: 'graph.changed' });
+    if (!from) return;
+    this.d.bus.emit({ type: 'edge.pulse', from: input.agentId, to: from.id, kind: 'delegate' });
+    this.d.bus.activity({ type: 'delegation.result', category: 'agent', tone: end.status === 'done' ? 'pass' : 'error', who: toName, text: `${from.name}에게 결과 전달 · ${label}`, agentId: from.id });
+    try {
+      this.enqueue({
+        agentId: from.id,
+        source: del.back.source,
+        sourceLabel: `위임 결과 · ${toName}`,
+        origin: 'delegation',
+        text: delegationResultText(toName, end.status, end.finalText, end.error),
+        reply: del.back.reply,
+        title: `위임 결과 · ${toName}`,
+        quiet: del.back.quiet,
+        trigger: `${toName}의 위임 결과 (${label})`,
+        reportTo: del.back.reportTo,
+        chain: del.back.chain,
+        delegation: del.back.delegation,
+      });
+    } catch (err) {
+      if (!(err instanceof NotFoundError)) throw err;
+    }
   }
 
   /* ───────── 채널 메시지 ───────── */
@@ -367,6 +642,21 @@ export class AgentManager {
       const outcome = this.d.hooks.run({ event: 'on_message', agentId: agent.id, agentName: agent.name, taskId: null, now: new Date(), channel: moduleId, target: msg.target, user: msg.userName, text: msg.text });
       if (outcome.decision === 'deny') {
         this.d.bus.activity({ type: 'message.dropped', category: 'hook', tone: 'block', who: '훅 차단', text: `${mod.manifest.name} → ${agent.name} 수신 차단 · ${outcome.reasons[0] ?? ''}`, agentId: agent.id, moduleId });
+        continue;
+      }
+      if (msg.quiet === true) {
+        // 모듈의 자동 알림(새 메일 등): 에이전트가 알릴 것이 있다고 판단할 때만 화면과 보고 채널에 나타납니다.
+        this.enqueue({
+          agentId: agent.id,
+          source: `${moduleId}:${msg.target}`,
+          sourceLabel: `${mod.manifest.name} · ${msg.targetLabel}`,
+          origin: 'channel',
+          text: `${quietPreamble('event')}\n\n${msg.text}`,
+          reply: null,
+          quiet: true,
+          trigger: msg.text.slice(0, 1500),
+          reportTo: agent.report,
+        });
         continue;
       }
       this.d.bus.emit({ type: 'edge.pulse', from: `module:${moduleId}`, to: agent.id, kind: 'message' });
@@ -389,6 +679,7 @@ export class AgentManager {
   async deliver(agent: AgentRow, env: ToolEnv, moduleId: string, target: string, text: string): Promise<string> {
     const mod = this.d.store.getModule(moduleId);
     if (!mod.manifest.channel) throw new ModuleError('module_not_channel', `모듈 '${mod.manifest.name}'은(는) 메시지를 보내는 채널이 아닙니다.`);
+    if (mod.manifest.channel.send === false) throw new ModuleError('module_receive_only', `'${mod.manifest.name}' 모듈은 받기만 하고 보내지는 않습니다. 보고는 Discord · Telegram 같은 채널로 보내세요.`);
     if (!mod.enabled) throw new ModuleError('module_disabled', `'${mod.manifest.name}' 모듈이 꺼져 있어 보내지 못했습니다.`, 409);
     const def = this.permissionDefs().find((x) => x.key === `msg.${moduleId}`) ?? messagePermission(moduleId, mod.manifest.name);
     const decision = evaluatePermission(def, agent.permissions[def.key], target);
@@ -397,14 +688,14 @@ export class AgentManager {
     const outcome = this.d.hooks.run({ event: 'before_send', agentId: agent.id, agentName: agent.name, taskId: env.taskId, now: new Date(), channel: moduleId, target, text, perMinute: agent.limits.messagesPerMinute });
     if (outcome.decision === 'deny') {
       const reason = outcome.reasons[0] ?? '훅이 막았습니다.';
-      const item = this.d.store.addTimeline(env.threadId, env.taskId, 'block', { title: outcome.by[0]?.startsWith('guard:') ? `훅 차단 · ${outcome.by[0].slice(6)}` : '훅 차단', text: reason, code: `send ${moduleId} ${target}` });
-      this.d.bus.emit({ type: 'timeline.add', agentId: agent.id, item });
-      this.d.bus.activity({ type: 'hook.blocked', category: 'hook', tone: 'block', who: '훅 차단', text: `${agent.name} · ${reason}`, agentId: agent.id });
+      env.sink.timeline('block', { title: outcome.by[0]?.startsWith('guard:') ? `훅 차단 · ${outcome.by[0].slice(6)}` : '훅 차단', text: reason, code: `send ${moduleId} ${target}` });
+      env.sink.activity({ type: 'hook.blocked', category: 'hook', tone: 'block', who: '훅 차단', text: `${agent.name} · ${reason}`, agentId: agent.id });
       throw new PermissionDeniedError('send_blocked', `${reason}`);
     }
     const body = outcome.text ?? text;
     const asks = [...(decision.decision === 'ask' ? [decision.reason] : []), ...outcome.reasons];
     if (asks.length > 0) {
+      if (env.sink.hidden) throw new PermissionDeniedError('send_needs_approval', `조용한 판단 중에는 승인이 필요한 전송을 할 수 없습니다: ${asks[0]}`);
       const { wait } = this.d.approvals.request({
         agentId: agent.id,
         agentName: agent.name,
@@ -419,10 +710,9 @@ export class AgentManager {
       if (r.decision === 'expired') throw new PermissionDeniedError('send_expired', r.note ?? '승인 대기 시간이 지나 보내지 않았습니다.');
     }
     await this.d.registry.send(moduleId, target, body);
-    this.d.bus.emit({ type: 'edge.pulse', from: agent.id, to: `module:${moduleId}`, kind: 'message' });
-    this.d.bus.activity({ type: 'message.out', category: 'module', tone: 'agent', who: agent.name, text: `${mod.manifest.name} ${target} 전송 · ${body.length}자${outcome.text !== undefined ? ' · 훅이 내용을 고침' : ''}`, agentId: agent.id, moduleId });
-    const item = this.d.store.addTimeline(env.threadId, env.taskId, 'hook', { text: `전송됨 · ${mod.manifest.name} ${target}${outcome.text !== undefined ? ' (훅이 일부 내용을 가림)' : ''}` });
-    this.d.bus.emit({ type: 'timeline.add', agentId: agent.id, item });
+    env.sink.emit({ type: 'edge.pulse', from: agent.id, to: `module:${moduleId}`, kind: 'message' });
+    env.sink.activity({ type: 'message.out', category: 'module', tone: 'agent', who: agent.name, text: `${mod.manifest.name} ${target} 전송 · ${body.length}자${outcome.text !== undefined ? ' · 훅이 내용을 고침' : ''}`, agentId: agent.id, moduleId });
+    env.sink.timeline('hook', { text: `전송됨 · ${mod.manifest.name} ${target}${outcome.text !== undefined ? ' (훅이 일부 내용을 가림)' : ''}` });
     return `${mod.manifest.name} ${target} 로 보냈습니다.`;
   }
 
@@ -473,6 +763,10 @@ export class AgentManager {
       throw new ValidationError('skill_check_failed', `스킬 점검에서 문제가 나왔습니다. 고친 뒤 다시 만드세요:\n- ${problems.map((c) => `${c.label}: ${c.detail}`).join('\n- ')}`);
     }
     if (install.decision === 'ask') {
+      if (env.quiet) {
+        this.d.registry.installer.discard(staged.token);
+        throw new PermissionDeniedError('quiet_needs_approval', `조용한 판단 중에는 승인이 필요한 스킬 설치를 할 수 없습니다: ${install.reasons.join(' / ')}`);
+      }
       const { wait } = this.d.approvals.request({ agentId: agent.id, agentName: agent.name, taskId: env.taskId, threadId: env.threadId, kind: 'hook', title: `스킬 설치 · ${input.title}`, detail: { permission: null, target: input.name, rule: install.reasons.join(' / '), tool: 'skill_create', input: input.code.slice(0, 2000) } });
       const r = await wait;
       if (r.decision === 'deny' || r.decision === 'expired') {
@@ -501,16 +795,15 @@ export class AgentManager {
 
     this.d.store.connectModule(agent.id, row.id, {});
     const testsLabel = input.tests.length > 0 ? `${passed}/${input.tests.length}` : '없음';
-    const item = this.d.store.addTimeline(env.threadId, env.taskId, 'skill', {
+    env.sink.timeline('skill', {
       name: input.name,
       title: input.title,
       tests: testsLabel,
       agentName: agent.name,
       code: [`name:   ${input.name}`, `input:  ${JSON.stringify((input.input_schema['properties'] as object | undefined) ?? {}).slice(0, 120)}`, `needs:  ${input.net.length > 0 ? `net.fetch(${input.net.join(', ')})` : '외부 접속 없음'}`].join('\n'),
     });
-    this.d.bus.emit({ type: 'timeline.add', agentId: agent.id, item });
     this.d.bus.emit({ type: 'skill.created', skillId: row.id, agentId: agent.id });
-    this.d.bus.activity({ type: 'skill.created', category: 'skill', tone: 'new', who: '새 스킬', text: `${agent.name}가 ${input.title}(${input.name})을(를) 만들어 연결 · 테스트 ${testsLabel}`, agentId: agent.id, moduleId: row.id });
+    env.sink.activity({ type: 'skill.created', category: 'skill', tone: 'new', who: '새 스킬', text: `${agent.name}가 ${input.title}(${input.name})을(를) 만들어 연결 · 테스트 ${testsLabel}`, agentId: agent.id, moduleId: row.id });
     this.d.bus.emit({ type: 'graph.changed' });
     return `스킬 '${input.title}'(${input.name}) v${version} 을(를) 만들어 연결했습니다. 테스트 ${testsLabel}. 다음 단계부터 도구로 쓸 수 있습니다.`;
   }
@@ -519,6 +812,10 @@ export class AgentManager {
 
   async createModule(agent: AgentRow, env: ToolEnv, files: SourceFile[]): Promise<string> {
     const staged = await this.d.registry.installer.fromFiles(files, agent.name);
+    if (staged.manifest.computer) {
+      this.d.registry.installer.discard(staged.token);
+      throw new ValidationError('module_computer_by_agent', '에이전트는 화면 제어 모듈(computer)을 만들 수 없습니다. 화면 제어는 사용자가 기본 제공 모듈을 켜서만 씁니다.');
+    }
     // 같은 id 로 덮어쓰면 다른 에이전트나 사용자가 쓰던 모듈이 바뀔 수 있으므로, 승인 여부와 관계없이 막습니다.
     const existing = this.d.store.findModule(staged.manifest.id);
     if (existing) {
@@ -549,6 +846,10 @@ export class AgentManager {
       return `모듈 '${row.manifest.name}'(${row.id})을(를) 설치하고 연결했습니다.${warns.length ? ` 확인할 점: ${warns.join(' / ')}` : ''}`;
     }
 
+    if (env.quiet) {
+      this.d.registry.installer.discard(staged.token);
+      throw new PermissionDeniedError('quiet_needs_approval', '조용한 판단 중에는 승인이 필요한 모듈 설치를 할 수 없습니다. 필요하면 보고에 적어 사용자에게 알리세요.');
+    }
     const row = this.d.registry.holdPending(staged, agent.id);
     const { wait } = this.d.approvals.request({
       agentId: agent.id,
@@ -575,6 +876,7 @@ export class AgentManager {
   }
 
   shutdown(): void {
+    this.stopHeartbeats();
     for (const rt of this.runtimes.values()) rt.cancelAll('서버가 종료되어 작업을 멈췄습니다.');
   }
 
