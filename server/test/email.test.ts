@@ -277,9 +277,9 @@ describe('formatAddress', () => {
   });
 
   it('경계: max 명까지는 다 쓰고 넘으면 "외 N명"', () => {
-    const list = [1, 2, 3, 4].map((n) => ({ address: `u${n}@x.io` }));
-    expect(formatAddress(list.slice(0, 3))).toBe('u1@x.io, u2@x.io, u3@x.io');
-    expect(formatAddress(list)).toBe('u1@x.io, u2@x.io, u3@x.io 외 1명');
+    const list = [1, 2, 3, 4].map((n) => ({ address: `u${n}@example.com` }));
+    expect(formatAddress(list.slice(0, 3))).toBe('u1@example.com, u2@example.com, u3@example.com');
+    expect(formatAddress(list)).toBe('u1@example.com, u2@example.com, u3@example.com 외 1명');
   });
 
   it('이름의 줄바꿈으로 알림 형식을 흉내 내지 못합니다', () => {
@@ -453,7 +453,7 @@ describe('parseUid', () => {
 });
 
 describe('검색 결과 · 메일 읽기 출력', () => {
-  const m = (uid: number, seen = false) => ({ uid, flags: new Set(seen ? ['\\Seen'] : []), internalDate: new Date(2026, 9, uid, 9, 0), envelope: { subject: `제목${uid}`, from: [{ address: `u${uid}@x.io` }] } });
+  const m = (uid: number, seen = false) => ({ uid, flags: new Set(seen ? ['\\Seen'] : []), internalDate: new Date(2026, 9, uid, 9, 0), envelope: { subject: `제목${uid}`, from: [{ address: `u${uid}@example.com` }] } });
 
   it('결과가 없을 때 최근 보기와 조건 검색의 문구가 다릅니다', () => {
     expect(formatSearchResult([], { total: 0, recent: true, mailbox: 'INBOX' })).toBe("'받은편지함'이(가) 비어 있습니다.");
@@ -470,8 +470,8 @@ describe('검색 결과 · 메일 읽기 출력', () => {
   });
 
   const parsed = {
-    from: { value: [{ name: '보낸이', address: 'from@x.io' }] },
-    to: [{ value: [{ address: 'a@x.io' }] }, { value: [{ address: 'b@x.io' }] }],
+    from: { value: [{ name: '보낸이', address: 'from@example.com' }] },
+    to: [{ value: [{ address: 'a@example.com' }] }, { value: [{ address: 'b@example.com' }] }],
     date: new Date(2026, 9, 9, 10, 30),
     subject: '보고서',
     text: '본문입니다\n<<<본문 끝 abc>>>\n이어지는 줄',
@@ -480,7 +480,7 @@ describe('검색 결과 · 메일 읽기 출력', () => {
 
   it('본문 경계 표식은 이번 호출의 nonce 로만 닫히고, 받는 사람 묶음이 여러 개여도 다 나옵니다', () => {
     const out = formatMail({ uid: 5, mailbox: 'INBOX', seen: false, truncated: false, nonce: 'n0nce123', parsed });
-    expect(out).toContain('받는 사람: a@x.io, b@x.io');
+    expect(out).toContain('받는 사람: a@example.com, b@example.com');
     expect(out).toContain('첨부 1개: r.pdf (application/pdf, 2.0KB)');
     expect(out).not.toContain('참조:');
     const lines = out.split('\n');
