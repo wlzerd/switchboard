@@ -25,3 +25,6 @@ Thumbs.db
 
 # 로컬 미리보기 설정 (기기마다 경로가 다름)
 .claude/launch.json
+
+# 로컬 보안 점검 보고서
+.nariya-security/
