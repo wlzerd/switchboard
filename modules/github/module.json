@@ -1,7 +1,7 @@
 {
   "id": "github",
   "name": "GitHub",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "지켜보는 저장소에 새 이슈가 올라오면 연결된 에이전트가 조용히 판단하게 하고, 이슈 읽기 · 댓글 · 라벨 · 닫기, 파일 읽기, 브랜치 커밋 · PR 만들기 도구를 줍니다.",
   "kind": "module",
   "entry": "index.js",
@@ -19,7 +19,7 @@
       "label": "토큰",
       "required": true,
       "secret": true,
-      "description": "fine-grained 개인 액세스 토큰 (저장소 권한: Issues · Pull requests · Contents 읽기·쓰기), 또는 GitHub 로그인으로 받은 토큰",
+      "description": "fine-grained 개인 액세스 토큰 (저장소 권한: Issues · Pull requests · Contents 읽기·쓰기), 또는 gh · GitHub 로그인으로 받은 토큰",
       "url": "https://github.com/settings/personal-access-tokens/new?name=Switchboard&description=Switchboard%20GitHub%20%EB%AA%A8%EB%93%88&expires_in=90&issues=write&pull_requests=write&contents=write&metadata=read"
     },
     {
@@ -27,7 +27,7 @@
       "label": "OAuth 앱 Client ID",
       "required": false,
       "secret": false,
-      "description": "GitHub 로그인에 쓸 OAuth 앱의 Client ID (앱 설정에서 Enable Device Flow 켜기)",
+      "description": "직접 만든 OAuth 앱으로 화면에서 로그인할 때만 (앱 설정에서 Enable Device Flow 켜기)",
       "url": "https://github.com/settings/applications/new"
     },
     {
@@ -64,9 +64,22 @@
     ],
     "account": {
       "url": "https://api.github.com/user",
-      "field": "login"
+      "field": "login",
+      "scopesHeader": "x-oauth-scopes"
     },
-    "manageUrl": "https://github.com/settings/connections/applications/{clientId}"
+    "manageUrl": "https://github.com/settings/connections/applications/{clientId}",
+    "cli": {
+      "label": "서버의 gh 로그인 가져오기",
+      "command": "gh",
+      "args": [
+        "auth",
+        "token",
+        "--hostname",
+        "github.com"
+      ],
+      "loginCommand": "gh auth login",
+      "installUrl": "https://cli.github.com"
+    }
   },
   "permissions": {
     "net": [

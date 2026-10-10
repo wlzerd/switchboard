@@ -1,9 +1,11 @@
 /**
- * 모듈 로그인: OAuth 기기 로그인(RFC 8628).
- * module.json 의 login 선언대로 서버가 로그인 코드를 받아 화면에 보여 주고, 사용자가 그 서비스에서 허락할 때까지 기다렸다가
- * 받은 토큰을 모듈 설정(tokenEnv)에 암호화해 넣고 모듈을 다시 시작합니다. 토큰을 붙여 넣는 방식은 그대로 쓸 수 있습니다.
+ * 모듈 로그인: 비밀값을 붙여 넣는 대신 로그인으로 받습니다. module.json 의 login 선언대로 두 길이 있습니다.
+ *  - OAuth 기기 로그인(RFC 8628): 서버가 로그인 코드를 받아 화면에 보여 주고, 사용자가 그 서비스에서 허락할 때까지 기다립니다.
+ *  - 서버 CLI 로그인 가져오기(login.cli): 사용자가 서버 터미널에서 로그인해 둔 CLI(예: gh)에게서 토큰을 받습니다. 기본 제공 모듈만.
+ * 받은 토큰은 모듈 설정(tokenEnv)에 암호화해 넣고 모듈을 다시 시작합니다. 토큰을 붙여 넣는 방식은 그대로 쓸 수 있습니다.
  * 기기 코드(device_code)와 토큰은 서버 밖(화면 · 로그 · 활동)으로 내보내지 않습니다. 기다리는 동안의 확인은 재귀 없이 반복문으로 합니다.
  */
+import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import type { ModuleRow, Store } from '../db/store.ts';
 import { ConflictError, ModuleError, ValidationError } from '../errors.ts';
@@ -26,8 +28,34 @@ const MAX_INTERVAL_S = 60;
 const SLOW_DOWN_S = 5;
 /** 네트워크 오류가 이만큼 이어지면 기다리기를 그만둡니다 */
 export const NET_FAIL_MAX = 5;
+/** CLI 가 토큰을 알려 주기를 기다릴 시간 (키체인 확인 등) */
+export const CLI_TIMEOUT_MS = 15_000;
+/**
+ * CLI 에 넘길 환경 변수: 자기 설정 · 키체인을 찾는 데 필요한 것만. 서버의 비밀값(.env)은 넘기지 않습니다.
+ * GH_TOKEN 같은 토큰 변수도 넘기지 않아, 사용자가 터미널에서 로그인해 둔 계정의 토큰만 받습니다.
+ */
+export const CLI_ENV_KEYS = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'] as const;
+
+/** CLI 실행: 셸을 거치지 않고 정해 둔 인자만, 최소 환경으로 돌립니다. 표준 출력을 돌려줍니다. */
+export function runCliDefault(command: string, args: readonly string[]): Promise<string> {
+  const env: Record<string, string> = {};
+  for (const k of CLI_ENV_KEYS) {
+    const v = process.env[k];
+    if (v !== undefined && v !== '') env[k] = v;
+  }
+  return new Promise((resolve, reject) => {
+    execFile(command, [...args], { env, timeout: CLI_TIMEOUT_MS, maxBuffer: 64 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      if (err) {
+        reject(Object.assign(err, { stderr: String(stderr) }));
+        return;
+      }
+      resolve(String(stdout));
+    });
+  });
+}
 
 export type LoginOutcome = 'expired' | 'denied' | 'failed' | 'cancelled';
+export type LoginVia = 'device' | 'cli';
 
 export interface LoginView {
   label: string;
@@ -38,8 +66,10 @@ export interface LoginView {
   ready: boolean;
   /** 이 앱의 권한을 거둘 수 있는 페이지 (Client ID 가 있을 때) */
   manageUrl: string | null;
-  /** 지금 토큰이 로그인으로 받은 것일 때 */
-  current: { account: string | null; scope: string; at: number } | null;
+  /** 지금 토큰이 로그인으로 받은 것일 때 (via: 기기 로그인 · 서버 CLI) */
+  current: { account: string | null; scope: string; at: number; via: LoginVia } | null;
+  /** 서버 CLI 로그인 가져오기 (기본 제공 모듈에서만) */
+  cli: { label: string; command: string; loginCommand: string; installUrl: string | null } | null;
   /** 사용자가 허락하기를 기다리는 중 */
   pending: { userCode: string; verificationUri: string; expiresAt: number; scope: string } | null;
   /** 마지막으로 끝난 로그인 시도 (성공은 current 로 보임) */
@@ -52,6 +82,8 @@ interface Saved {
   scope: string;
   at: number;
   fp: string;
+  /** 없으면 기기 로그인 (예전 기록) */
+  via?: LoginVia;
 }
 
 interface Session {
@@ -79,6 +111,7 @@ export interface LoginDeps {
 }
 
 const metaKey = (moduleId: string): string => `module-login:${moduleId}`;
+type CliError = NodeJS.ErrnoException & { killed?: boolean; signal?: string | null; stderr?: string };
 const fingerprint = (token: string): string => crypto.createHash('sha256').update(token).digest('hex').slice(0, 32);
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 
@@ -111,6 +144,17 @@ function startError(r: Reply, host: string, clientId: string, scope: string): st
   return `${host} 가 로그인 코드를 주지 않았습니다 (${r.status}${code ? ` · ${code}` : ''})${desc ? `: ${desc}` : '.'}`;
 }
 
+/** CLI 에게서 토큰을 받지 못한 이유 */
+function cliError(err: CliError, cli: NonNullable<ManifestLogin['cli']>): ModuleError {
+  const again = `서버를 실행하는 계정으로 '${cli.loginCommand}' 을 한 뒤 다시 누르세요.`;
+  if (err.code === 'ENOENT') {
+    return new ModuleError('module_login_cli_missing', `서버에 ${cli.command} 가 설치되어 있지 않습니다${cli.installUrl ? ` (설치: ${cli.installUrl})` : ''}. 설치하고 ${again}`, 409);
+  }
+  if (err.killed || err.signal === 'SIGTERM') return new ModuleError('module_login_cli_timeout', `${cli.command} 가 ${CLI_TIMEOUT_MS / 1000}초 안에 답하지 않았습니다 (키체인 잠금 등). ${again}`, 504);
+  const line = (err.stderr ?? '').trim().split('\n').map((x) => x.trim()).find(Boolean)?.slice(0, 200) ?? '';
+  return new ModuleError('module_login_cli_failed', `${cli.command} 에서 로그인 정보를 받지 못했습니다${line ? `: ${line}` : ` (${err.message.slice(0, 200)})`}. ${again}`, 409);
+}
+
 /** 토큰을 기다리다 끝난 이유 */
 function pollEnd(r: Reply, host: string, clientId: string): [LoginOutcome, string] {
   const code = str(r.data?.['error']);
@@ -134,6 +178,7 @@ export class ModuleLoginService {
   fetch: typeof fetch = (input, init) => globalThis.fetch(input, init);
   sleep: (ms: number, signal: AbortSignal) => Promise<void> = abortableSleep;
   now: () => number = () => Date.now();
+  runCli: (command: string, args: readonly string[]) => Promise<string> = runCliDefault;
 
   constructor(deps: LoginDeps) {
     this.d = deps;
@@ -154,10 +199,47 @@ export class ModuleLoginService {
       tokenEnv: spec.tokenEnv,
       ready: clientId !== '',
       manageUrl: spec.manageUrl && clientId ? spec.manageUrl.replace('{clientId}', encodeURIComponent(clientId)) : null,
-      current: saved && token && fingerprint(token) === saved.fp ? { account: saved.account, scope: saved.scope, at: saved.at } : null,
+      current: saved && token && fingerprint(token) === saved.fp ? { account: saved.account, scope: saved.scope, at: saved.at, via: saved.via ?? 'device' } : null,
+      cli: spec.cli && row.origin === 'builtin' ? { label: spec.cli.label, command: spec.cli.command, loginCommand: spec.cli.loginCommand, installUrl: spec.cli.installUrl ?? null } : null,
       pending: s ? { userCode: s.userCode, verificationUri: s.verificationUri, expiresAt: s.expiresAt, scope: s.scope } : null,
       last: this.last.get(row.id) ?? null,
     };
+  }
+
+  /**
+   * 서버 CLI 의 로그인 가져오기 (예: gh auth token). 기본 제공 모듈만, module.json 에 정해 둔 명령만 셸 없이 실행합니다.
+   * 받은 토큰은 그 서비스에 확인한 뒤 넣습니다 (거절되면 넣지 않음).
+   */
+  async importCli(moduleId: string): Promise<LoginView> {
+    const row = this.d.store.getModule(moduleId);
+    const spec = row.manifest.login ?? null;
+    const cli = spec?.cli;
+    if (!spec || !cli) throw new ValidationError('module_login_cli_none', `'${row.manifest.name}' 모듈은 서버 로그인 가져오기를 지원하지 않습니다.`);
+    if (row.origin !== 'builtin') throw new ValidationError('module_login_cli_origin', `서버 로그인 가져오기는 기본 제공 모듈만 쓸 수 있습니다. '${row.manifest.name}'은(는) 직접 설치한 모듈입니다.`);
+    if (row.status === 'pending' || row.status === 'rejected') throw new ConflictError('module_login_state', `'${row.manifest.name}' 모듈은 설치를 승인하기 전이라 로그인할 수 없습니다.`);
+    let out: string;
+    try {
+      out = await this.runCli(cli.command, cli.args);
+    } catch (err) {
+      throw cliError(err as CliError, cli);
+    }
+    const token = out.trim();
+    if (token === '' || /\s/.test(token) || token.length > 500) {
+      throw new ModuleError('module_login_cli_output', `${cli.command} 가 토큰을 알려 주지 않았습니다. 서버를 실행하는 계정으로 '${cli.loginCommand}' 을 한 뒤 다시 누르세요.`, 409);
+    }
+    const who = await this.lookupAccount(spec, token, AbortSignal.timeout(REQUEST_TIMEOUT_MS));
+    if (who.rejected) {
+      throw new ModuleError('module_login_cli_rejected', `${cli.command} 의 토큰을 ${who.host} 가 거절했습니다 (401). 서버를 실행하는 계정으로 '${cli.loginCommand}' 을 다시 한 뒤 누르세요.`, 409);
+    }
+    // 기다리던 기기 로그인은 조용히 멈춥니다.
+    const s = this.sessions.get(moduleId);
+    if (s) {
+      this.sessions.delete(moduleId);
+      s.abort.abort();
+    }
+    this.last.delete(moduleId);
+    await this.keep(row, spec, token, who.account, who.scopes ?? '', 'cli', `${cli.command} 로그인 가져옴`);
+    return this.view(this.d.store.getModule(moduleId)) as LoginView;
   }
 
   /** 로그인 시작: 로그인 코드를 받아 두고, 허락을 기다리는 일은 뒤에서 합니다. */
@@ -311,28 +393,11 @@ export class ModuleLoginService {
     }
   }
 
-  /** 받은 토큰을 설정에 넣고 모듈을 다시 시작합니다. */
+  /** 기기 로그인으로 받은 토큰: 그 서비스에 확인한 뒤 넣습니다. */
   private async succeed(s: Session, token: string, granted: string): Promise<void> {
-    let account: string | null = null;
-    if (s.spec.account) {
-      const host = new URL(s.spec.account.url).hostname;
-      try {
-        const res = await this.fetch(s.spec.account.url, {
-          headers: { Accept: 'application/json', Authorization: `Bearer ${token}`, 'User-Agent': USER_AGENT },
-          signal: AbortSignal.any([s.abort.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
-        });
-        if (res.status === 401) return this.end(s, 'failed', `받은 토큰을 ${host} 가 거절했습니다 (401). 다시 로그인을 누르세요.`);
-        if (res.ok) {
-          const j = (await res.json()) as Record<string, unknown> | null;
-          const v = j?.[s.spec.account.field];
-          if (typeof v === 'string' || typeof v === 'number') account = String(v).slice(0, 100);
-        }
-      } catch {
-        // 계정 이름을 몰라도 토큰은 씁니다 (모듈이 시작할 때 다시 확인함).
-        if (s.abort.signal.aborted) return;
-      }
-    }
+    const who = await this.lookupAccount(s.spec, token, AbortSignal.any([s.abort.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]));
     if (s.abort.signal.aborted) return;
+    if (who.rejected) return this.end(s, 'failed', `받은 토큰을 ${who.host} 가 거절했습니다 (401). 다시 로그인을 누르세요.`);
     let row: ModuleRow;
     try {
       row = this.d.store.getModule(s.moduleId);
@@ -340,10 +405,36 @@ export class ModuleLoginService {
       return this.end(s, 'failed', '그 사이 모듈이 지워져 받은 토큰을 넣지 못했습니다.');
     }
     if (row.manifest.login?.tokenEnv !== s.spec.tokenEnv) return this.end(s, 'failed', '그 사이 모듈이 바뀌어 받은 토큰을 넣지 못했습니다. 다시 로그인을 누르세요.');
-    this.d.settings.saveModule(row, { [s.spec.tokenEnv]: token });
-    this.d.store.setSetting(metaKey(row.id), { account, scope: granted, at: this.now(), fp: fingerprint(token) } satisfies Saved);
     if (this.sessions.get(s.moduleId) === s) this.sessions.delete(s.moduleId);
-    this.d.bus.activity({ type: 'module.login', category: 'module', tone: 'pass', who: row.manifest.name, text: `${s.spec.label} · ${account ? `@${account}` : '계정 이름 모름'} · 권한 ${granted || '(없음)'}`, moduleId: row.id });
+    await this.keep(row, s.spec, token, who.account, granted, 'device', `권한 ${granted || '(없음)'}`);
+  }
+
+  /**
+   * 토큰으로 계정 이름 · 권한 범위를 알아봅니다 (login.account 가 있을 때).
+   * 401 이면 rejected. 확인 자체가 안 되면(네트워크 등) 계정 이름 없이 넘어갑니다 — 모듈이 시작할 때 다시 확인합니다.
+   */
+  private async lookupAccount(spec: ManifestLogin, token: string, signal: AbortSignal): Promise<{ account: string | null; scopes: string | null; rejected: boolean; host: string }> {
+    const acc = spec.account;
+    if (!acc) return { account: null, scopes: null, rejected: false, host: '' };
+    const host = new URL(acc.url).hostname;
+    try {
+      const res = await this.fetch(acc.url, { headers: { Accept: 'application/json', Authorization: `Bearer ${token}`, 'User-Agent': USER_AGENT }, signal });
+      if (res.status === 401) return { account: null, scopes: null, rejected: true, host };
+      if (!res.ok) return { account: null, scopes: null, rejected: false, host };
+      const j = (await res.json()) as Record<string, unknown> | null;
+      const v = j?.[acc.field];
+      const scopes = acc.scopesHeader ? res.headers.get(acc.scopesHeader) : null;
+      return { account: typeof v === 'string' || typeof v === 'number' ? String(v).slice(0, 100) : null, scopes: scopes === null ? null : scopes.slice(0, 300), rejected: false, host };
+    } catch {
+      return { account: null, scopes: null, rejected: false, host };
+    }
+  }
+
+  /** 토큰을 설정에 암호화해 넣고, 기록을 남기고, 켜져 있으면 모듈을 다시 시작합니다. */
+  private async keep(row: ModuleRow, spec: ManifestLogin, token: string, account: string | null, scope: string, via: LoginVia, detail: string): Promise<void> {
+    this.d.settings.saveModule(row, { [spec.tokenEnv]: token });
+    this.d.store.setSetting(metaKey(row.id), { account, scope, at: this.now(), fp: fingerprint(token), via } satisfies Saved);
+    this.d.bus.activity({ type: 'module.login', category: 'module', tone: 'pass', who: row.manifest.name, text: `${spec.label} · ${account ? `@${account}` : '계정 이름 모름'} · ${detail}`, moduleId: row.id });
     if (row.enabled && row.status !== 'pending' && row.status !== 'rejected') {
       await this.d.restart(row.id).catch(() => {
         // 시작하지 못한 이유는 모듈 상태에 남아 설정 화면에 보입니다.

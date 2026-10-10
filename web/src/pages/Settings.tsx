@@ -512,6 +512,21 @@ function LoginPanel({ moduleId, login, onChanged, onLogout, loggingOut }: { modu
     }
   };
 
+  // 서버 터미널에서 로그인해 둔 CLI(예: gh)의 토큰 가져오기
+  const importCli = async (): Promise<void> => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      const r = await api<{ login: LoginView }>(`/api/modules/${moduleId}/login/cli`, { body: {} });
+      toast(`${login.cli?.command ?? 'CLI'} 로그인을 가져왔습니다${r.login.current?.account ? ` · @${r.login.current.account}` : ''}`, 'ok');
+      onChanged();
+    } catch (err) {
+      setProblem(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const copy = async (code: string): Promise<void> => {
     try {
       await navigator.clipboard.writeText(code);
@@ -554,18 +569,29 @@ function LoginPanel({ moduleId, login, onChanged, onLogout, loggingOut }: { modu
         </div>
       ) : (
         <div className="login-row">
-          {login.scopes.length > 1 ? <Seg value={scope} options={login.scopes.map((x) => ({ value: x.value, label: x.label }))} onChange={setScope} label="로그인 권한 범위" /> : null}
-          <button type="button" className="btn sm primary" disabled={!login.ready || busy} onClick={() => void call('POST')}>
-            {busy ? <span className="spinner" style={{ width: 13, height: 13 }} /> : <Icon name="key" size={14} stroke={2.2} />}
-            {login.current ? '다시 로그인' : login.label}
-          </button>
-          {!login.ready ? <span className="chip warn mono">{login.clientIdEnv} 필요</span> : null}
+          {login.cli ? (
+            <button type="button" className={`btn sm ${login.ready ? '' : 'primary'}`} disabled={busy} onClick={() => void importCli()}>
+              {busy ? <span className="spinner" style={{ width: 13, height: 13 }} /> : <Icon name="terminal" size={14} stroke={2.2} />}
+              {login.cli.label}
+            </button>
+          ) : null}
+          {/* 화면에서 하는 기기 로그인은 OAuth 앱 Client ID 가 있을 때만 */}
+          {login.ready ? (
+            <>
+              {login.scopes.length > 1 ? <Seg value={scope} options={login.scopes.map((x) => ({ value: x.value, label: x.label }))} onChange={setScope} label="로그인 권한 범위" /> : null}
+              <button type="button" className="btn sm primary" disabled={busy} onClick={() => void call('POST')}>
+                {busy ? <span className="spinner" style={{ width: 13, height: 13 }} /> : <Icon name="key" size={14} stroke={2.2} />}
+                {login.current?.via === 'device' ? '다시 로그인' : login.label}
+              </button>
+            </>
+          ) : null}
+          {!login.ready && !login.cli ? <span className="chip warn mono">{login.clientIdEnv} 필요</span> : null}
           {login.current ? (
             <button type="button" className="btn sm danger" disabled={loggingOut} onClick={onLogout}>
               로그아웃
             </button>
           ) : null}
-          {login.current && login.manageUrl ? (
+          {login.current?.via === 'device' && login.manageUrl ? (
             <a className="set-link" href={login.manageUrl} target="_blank" rel="noopener noreferrer">
               <Icon name="link" size={12} stroke={2.2} />
               앱 권한 관리

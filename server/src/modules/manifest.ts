@@ -38,6 +38,9 @@ const httpsUrl = (what: string) => z.string().max(500).refine(isHttps, { error: 
 
 /** OAuth 권한 범위 값 (예: repo, read:user, 'repo read:org' 처럼 공백으로 여러 개) */
 const SCOPE_RE = /^[A-Za-z0-9_:./-]+(?: [A-Za-z0-9_:./-]+)*$/;
+/** 서버에서 실행할 CLI 이름 (경로 없이 PATH 에서 찾음) 과 인자: 셸을 거치지 않고 그대로 넘깁니다 */
+const CLI_NAME_RE = /^[a-z][a-z0-9-]{0,31}$/;
+const CLI_ARG_RE = /^[A-Za-z0-9._:/=-]{1,100}$/;
 
 /**
  * 로그인으로 비밀값 받기: OAuth 기기 로그인(RFC 8628). 서버가 코드를 받아 화면에 보여 주고,
@@ -58,10 +61,30 @@ const loginSchema = z.object({
     .array(z.object({ value: z.string().max(200).regex(SCOPE_RE, { error: "login.scopes 의 value 는 'repo' 나 'read:user repo' 같은 권한 범위여야 합니다." }), label: z.string().min(1).max(40) }))
     .min(1, { error: 'login.scopes 에 권한 범위를 하나 이상 적으세요.' })
     .max(5),
-  /** 로그인한 계정 이름을 알아낼 곳 (GET · Bearer 토큰) 과 응답 JSON 의 필드 */
-  account: z.object({ url: httpsUrl('login.account.url'), field: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/) }).optional(),
+  /** 로그인한 계정 이름을 알아낼 곳 (GET · Bearer 토큰) 과 응답 JSON 의 필드 · 권한 범위를 알려 주는 응답 머리글 */
+  account: z
+    .object({
+      url: httpsUrl('login.account.url'),
+      field: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
+      scopesHeader: z.string().regex(/^[A-Za-z0-9-]{1,64}$/).optional(),
+    })
+    .optional(),
   /** 사용자가 이 앱의 권한을 거둘 수 있는 페이지. {clientId} 는 Client ID 로 바뀝니다. */
   manageUrl: httpsUrl('login.manageUrl').optional(),
+  /**
+   * 서버에 설치된 CLI 의 로그인 가져오기 (예: gh auth token). 사용자가 서버 터미널에서 loginCommand 로 로그인해 두면
+   * 그 토큰을 받아 tokenEnv 에 넣습니다. 기본 제공 모듈만 쓸 수 있습니다 (명령을 실행하므로).
+   */
+  cli: z
+    .object({
+      label: z.string().min(1).max(40),
+      command: z.string().regex(CLI_NAME_RE, { error: 'login.cli.command 는 경로 없이 프로그램 이름만 적습니다 (예: gh).' }),
+      args: z.array(z.string().regex(CLI_ARG_RE, { error: 'login.cli.args 에는 공백 · 따옴표 · 셸 기호 없이 낱말만 적습니다.' })).max(10),
+      /** 사용자가 서버 터미널에서 먼저 할 로그인 명령 (안내 문구용) */
+      loginCommand: z.string().min(1).max(100),
+      installUrl: httpsUrl('login.cli.installUrl').optional(),
+    })
+    .optional(),
 });
 
 const envSchema = z.object({

@@ -132,7 +132,7 @@ export default async function run(input, ctx) {
 | `channel` | 메시지를 주고받는 모듈이면 `{ "label": "표시 이름" }`, 받기만 하는 모듈(메일 감시 등)은 `{ "label": "표시 이름", "send": false }`, 아니면 `null` |
 | `computer` | 화면 제어 모듈만 `{ "label": "표시 이름" }`. 에이전트는 만들 수 없음 (아래) |
 | `env` | 최대 20개. 이름은 대문자로 시작, 대문자·숫자·밑줄. `label` 은 설정 화면에 보일 이름(40자까지), `required` 는 기본 `true`. 토큰·비밀번호는 `"secret": true` (빼면 이름에 TOKEN · PASSWORD · API_KEY 등이 있을 때 비밀값으로 본다). `url` 에는 값을 만드는 페이지(토큰 발급 페이지 등, https 만)를 적으면 설정 화면과 "설정 필요" 카드에 링크로 보인다. 값은 사용자가 설정 화면에서 넣는다 |
-| `login` | (선택) 비밀값을 붙여 넣는 대신 OAuth 기기 로그인으로 받게 할 때. `{ "kind": "oauth-device", "label", "deviceCodeUrl", "tokenUrl", "clientIdEnv", "tokenEnv", "scopes": [{ "value", "label" }], "account": { "url", "field" }, "manageUrl" }`. 서버가 코드를 받아 설정 화면에 보여 주고, 사용자가 허락하면 받은 토큰을 `tokenEnv`(`"secret": true` 로 선언한 env)에 넣고 모듈을 다시 시작한다. 주소는 https 이고 `permissions.net` 안이어야 한다. 모듈은 평소처럼 `ctx.env` 로 토큰을 읽는다 |
+| `login` | (선택) 비밀값을 붙여 넣는 대신 OAuth 기기 로그인으로 받게 할 때. `{ "kind": "oauth-device", "label", "deviceCodeUrl", "tokenUrl", "clientIdEnv", "tokenEnv", "scopes": [{ "value", "label" }], "account": { "url", "field" }, "manageUrl" }`. 서버가 코드를 받아 설정 화면에 보여 주고, 사용자가 허락하면 받은 토큰을 `tokenEnv`(`"secret": true` 로 선언한 env)에 넣고 모듈을 다시 시작한다. 주소는 https 이고 `permissions.net` 안이어야 한다. 모듈은 평소처럼 `ctx.env` 로 토큰을 읽는다. 서버 CLI 의 로그인 가져오기(`login.cli`)는 명령을 실행하므로 기본 제공 모듈만 쓸 수 있다 |
 | `tools[].name` | 다른 모듈·내장 도구와 겹치지 않게 모듈 이름을 앞에 붙인다 (`notion_query`) |
 | `tools[].description` | 내가 이 설명만 보고 도구를 고른다. 언제 쓰는지까지 쓴다 |
 

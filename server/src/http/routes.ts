@@ -242,6 +242,8 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     return { login: await app.login.start(param(req, 'id'), b['scope']) };
   });
   server.delete<IdParams>('/api/modules/:id/login', async (req) => ({ login: app.login.cancel(param(req, 'id')) }));
+  /** 서버 CLI 로그인 가져오기 (예: 서버 터미널에서 gh auth login 을 해 둔 토큰). 기본 제공 모듈만. */
+  server.post<IdParams>('/api/modules/:id/login/cli', async (req) => ({ login: await app.login.importCli(param(req, 'id')) }));
 
   /** .env 에만 있는 값을 DB 로 옮깁니다: { moduleId?, names? } · 둘 다 없으면 모든 모듈과 훅 값 */
   server.post('/api/settings/import-env', async (req) => {

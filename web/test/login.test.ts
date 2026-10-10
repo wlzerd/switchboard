@@ -21,12 +21,16 @@ describe('모듈 로그인 표시', () => {
     expect(scopeName({ scopes }, ' ')).toBe('(없음)');
   });
 
-  it('상태 칩: 기다리는 중 → 로그인됨(계정 · 권한) → 로그인 안 함', () => {
+  it('상태 칩: 기다리는 중 → 로그인됨(계정 · 권한 또는 어디서 가져왔는지) → 로그인 안 함', () => {
     const pending = { userCode: 'WDJB-MJHT', verificationUri: 'https://github.com/login/device', expiresAt: 1, scope: 'repo' };
-    expect(loginBadge({ scopes, pending, current: { account: 'octo', scope: 'repo', at: 1 } })).toEqual({ text: '허락 기다리는 중', tone: 'warn' });
-    expect(loginBadge({ scopes, pending: null, current: { account: 'octo', scope: 'repo', at: 1 } })).toEqual({ text: '로그인됨 · @octo · 비공개 저장소 포함', tone: 'ok' });
-    expect(loginBadge({ scopes, pending: null, current: { account: null, scope: 'public_repo', at: 1 } })).toEqual({ text: '로그인됨 · 공개 저장소만', tone: 'ok' });
-    expect(loginBadge({ scopes, pending: null, current: null })).toEqual({ text: '로그인 안 함', tone: '' });
+    const cli = { label: '서버의 gh 로그인 가져오기', command: 'gh', loginCommand: 'gh auth login', installUrl: 'https://cli.github.com' };
+    const device = (account: string | null, scope: string) => ({ account, scope, at: 1, via: 'device' as const });
+    expect(loginBadge({ scopes, cli, pending, current: device('octo', 'repo') })).toEqual({ text: '허락 기다리는 중', tone: 'warn' });
+    expect(loginBadge({ scopes, cli, pending: null, current: device('octo', 'repo') })).toEqual({ text: '로그인됨 · @octo · 비공개 저장소 포함', tone: 'ok' });
+    expect(loginBadge({ scopes, cli: null, pending: null, current: device(null, 'public_repo') })).toEqual({ text: '로그인됨 · 공개 저장소만', tone: 'ok' });
+    // 서버 CLI 에서 가져온 토큰은 권한 범위 대신 어디서 왔는지
+    expect(loginBadge({ scopes, cli, pending: null, current: { account: 'octo', scope: 'gist, read:org, repo, workflow', at: 1, via: 'cli' } })).toEqual({ text: '로그인됨 · @octo · gh 로그인', tone: 'ok' });
+    expect(loginBadge({ scopes, cli, pending: null, current: null })).toEqual({ text: '로그인 안 함', tone: '' });
   });
 
   it('확인 주소는 https:// 와 끝 / 를 빼고 보여 줍니다', () => {

@@ -413,16 +413,24 @@ Anthropic 은 컴퓨터 사용을 최소 권한의 전용 가상 머신이나 �
 만든 토큰을 설정 화면에 붙여 넣습니다. "지켜볼 저장소"에 `owner/repo` 를 적으면 새 이슈가 올라올 때마다 연결된 에이전트가 조용히 판단합니다
 (처음 켤 때 이미 있던 이슈는 건너뜁니다. 바뀐 것이 없으면 GitHub 호출 한도를 쓰지 않는 조건부 요청으로 확인합니다).
 
-토큰을 붙여 넣는 대신 **GitHub 로그인**(OAuth 앱 기기 로그인)으로 받을 수도 있습니다. 어느 쪽을 쓸지는 사용자가 고릅니다.
+토큰을 붙여 넣는 대신 로그인으로 받을 수도 있습니다. 어느 쪽을 쓸지는 사용자가 고릅니다.
+
+**서버의 gh 로그인 가져오기** — 서버를 실행하는 계정으로 [GitHub CLI](https://cli.github.com)를 설치하고 `gh auth login` 을 한 번 합니다
+(한 번 쓰는 코드와 `github.com/login/device` 링크로 로그인). 그다음 설정 화면의 "서버의 gh 로그인 가져오기"를 누르면 서버가
+`gh auth token --hostname github.com` 으로 토큰을 받아 GitHub 에 확인한 뒤 암호화해 넣고 모듈을 다시 시작합니다.
+서버는 이 명령만 셸 없이 실행하고 `.env` 의 비밀값은 넘기지 않습니다. gh 의 토큰은 권한이 넓습니다 (보통 `repo` · `read:org` · `gist` · `workflow`).
+"로그아웃"은 Switchboard 에서 토큰을 지우는 것이고 gh 의 로그인은 그대로입니다.
+
+**직접 만든 OAuth 앱으로 화면에서 로그인** — 서버에 gh 를 두지 않으려면 OAuth 앱을 하나 만들어 같은 방식(코드 + 링크)으로 로그인합니다.
 
 1. GitHub → Settings → Developer settings → OAuth Apps → New OAuth App 에서 앱을 만듭니다 (설정 화면의 "OAuth 앱 Client ID" 옆 "만들기").
    Homepage URL 은 아무 주소나, Authorization callback URL 은 쓰지 않으므로 Homepage 와 같게 둡니다. 만든 뒤 **Enable Device Flow** 를 켭니다.
-2. 그 앱의 Client ID 를 설정 화면(또는 `.env` 의 `GITHUB_OAUTH_CLIENT_ID`)에 넣습니다. Client ID 는 비밀값이 아니고, Client secret 은 필요 없습니다.
-3. 설정 화면의 "GitHub 로그인"에서 권한 범위(비공개 저장소 포함 `repo` · 공개 저장소만 `public_repo`)를 고르고 누르면 코드가 나옵니다.
-   `github.com/login/device` 에서 그 코드를 넣고 허락하면 서버가 토큰을 받아 암호화해 넣고 모듈을 다시 시작합니다 (코드는 15분 동안 유효).
+2. 그 앱의 Client ID 를 설정 화면(또는 `.env` 의 `GITHUB_OAUTH_CLIENT_ID`)에 넣으면 로그인 버튼이 나옵니다. Client secret 은 필요 없습니다.
+3. 권한 범위(비공개 저장소 포함 `repo` · 공개 저장소만 `public_repo`)를 고르고 누르면 코드가 나옵니다.
+   `github.com/login/device` 에서 그 코드를 넣고 허락하면 서버가 토큰을 받아 넣습니다 (코드는 15분 동안 유효).
+   GitHub 쪽 권한은 "앱 권한 관리"(GitHub 의 Authorized OAuth Apps)에서 거둡니다.
 
-로그인 토큰은 만료되지 않지만 권한이 넓습니다 (`repo` 는 계정이 쓸 수 있는 모든 비공개 저장소). 저장소를 골라 권한을 좁히려면 fine-grained 토큰을 쓰세요.
-"로그아웃"은 서버에서 토큰을 지우고, GitHub 쪽 권한은 "앱 권한 관리"(GitHub 의 Authorized OAuth Apps)에서 거둡니다.
+로그인 토큰은 만료되지 않지만 권한이 넓습니다. 저장소를 골라 권한을 좁히려면 fine-grained 토큰을 쓰세요.
 
 | 도구 | 하는 일 |
 |---|---|

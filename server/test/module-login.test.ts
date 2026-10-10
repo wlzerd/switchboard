@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -7,7 +8,7 @@ import type { ModuleRow } from '../src/db/store.ts';
 import type { ServerEvent } from '../src/events/bus.ts';
 import { buildServer } from '../src/http/server.ts';
 import { setupGuide } from '../src/modules/host.ts';
-import { ModuleLoginService, NET_FAIL_MAX } from '../src/modules/login.ts';
+import { CLI_ENV_KEYS, CLI_TIMEOUT_MS, ModuleLoginService, NET_FAIL_MAX, runCliDefault } from '../src/modules/login.ts';
 import { parseManifest } from '../src/modules/manifest.ts';
 import { createLogger } from '../src/log.ts';
 import { startHarness, until, type Harness } from './helpers/harness.ts';
@@ -32,6 +33,7 @@ const LOGIN = {
   account: { url: 'https://api.example.com/user', field: 'login' },
   manageUrl: 'https://example.com/settings/connections/applications/{clientId}',
 };
+const CLI = { label: '서버의 svc 로그인 가져오기', command: 'svc-cli', args: ['auth', 'token'], loginCommand: 'svc-cli auth login', installUrl: 'https://example.com/cli' };
 const manifestOf = (over: Record<string, unknown> = {}) => ({
   id: 'svc',
   name: '서비스',
@@ -65,6 +67,10 @@ describe('module.json 의 login 선언', () => {
     [{ login: { ...LOGIN, clientIdEnv: 'SVC_TOKEN' } }, 'login.clientIdEnv 와 login.tokenEnv 는 서로 다른 env 여야 합니다.'],
     [{ login: { ...LOGIN, scopes: [LOGIN.scopes[0], { value: 'read write', label: '또' }] } }, 'login.scopes 에 같은 value 가 두 번 있습니다.'],
     [{ env: [{ name: 'SVC_TOKEN' }, { name: 'SVC_CLIENT_ID', required: false }] }, "svc: login.tokenEnv 'SVC_TOKEN'는 받은 토큰을 담으므로 env 에 secret: true 로 선언해야 합니다."],
+    [{ login: { ...LOGIN, cli: { ...CLI, command: '/usr/bin/gh' } } }, 'login.cli.command 는 경로 없이 프로그램 이름만 적습니다 (예: gh).'],
+    [{ login: { ...LOGIN, cli: { ...CLI, args: ['auth', 'token;rm'] } } }, 'login.cli.args 에는 공백 · 따옴표 · 셸 기호 없이 낱말만 적습니다.'],
+    [{ login: { ...LOGIN, cli: { ...CLI, args: ['auth token'] } } }, 'login.cli.args 에는 공백 · 따옴표 · 셸 기호 없이 낱말만 적습니다.'],
+    [{ login: { ...LOGIN, cli: { ...CLI, installUrl: 'http://example.com/cli' } } }, 'login.cli.installUrl 는 https:// 로 시작하는 주소여야 합니다.'],
   ])('틀린 선언 %# 은 이유와 함께 거절', (over, message) => {
     expect(bad(over)).toThrow(message);
   });
@@ -82,6 +88,9 @@ describe('GitHub 모듈의 로그인 선언과 문구', () => {
     expect(m.login?.scopes.map((s) => s.value)).toEqual(['repo', 'public_repo']);
     expect(m.permissions.net).toEqual(['api.github.com', 'github.com']);
     expect(m.env.find((e) => e.name === 'GITHUB_OAUTH_CLIENT_ID')).toMatchObject({ required: false, secret: false, url: 'https://github.com/settings/applications/new' });
+    // 서버 터미널에서 gh auth login 을 해 둔 토큰 가져오기
+    expect(m.login?.cli).toEqual({ label: '서버의 gh 로그인 가져오기', command: 'gh', args: ['auth', 'token', '--hostname', 'github.com'], loginCommand: 'gh auth login', installUrl: 'https://cli.github.com' });
+    expect(m.login?.account).toEqual({ url: 'https://api.github.com/user', field: 'login', scopesHeader: 'x-oauth-scopes' });
   });
 
   it('로그인 토큰(gho_)이면 401 · 403 · 404 문구가 로그인 기준', () => {
@@ -112,7 +121,7 @@ describe('GitHub 모듈의 로그인 선언과 문구', () => {
 /* ───────── 로그인 진행 ───────── */
 
 type Call = { url: string; method: string; form: Record<string, string>; headers: Record<string, string> };
-type Answer = [number, unknown] | Error;
+type Answer = [number, unknown] | [number, unknown, Record<string, string>] | Error;
 
 let h: Harness;
 beforeAll(async () => {
@@ -146,7 +155,7 @@ function fakeServer(answers: { device?: Answer; token?: Answer[]; account?: Answ
     else if (url === LOGIN.account.url) a = answers.account;
     if (a === undefined) throw new Error(`각본에 없는 요청: ${url}`);
     if (a instanceof Error) throw a;
-    return new Response(JSON.stringify(a[1]), { status: a[0], headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify(a[1]), { status: a[0], headers: { 'content-type': 'application/json', ...(a[2] ?? {}) } });
   };
   return { calls, fetchFn, tokenCalls: () => calls.filter((c) => c.url === LOGIN.tokenUrl) };
 }
@@ -384,6 +393,122 @@ describe('로그인 진행', () => {
   });
 });
 
+describe('서버 CLI 로그인 가져오기 (예: gh auth login 해 둔 토큰)', () => {
+  beforeEach(() => {
+    h.events.length = 0;
+  });
+  const withCli = (over: Partial<ModuleRow> = {}) => addModule(over, { login: { ...LOGIN, cli: CLI, account: { ...LOGIN.account, scopesHeader: 'x-oauth-scopes' } } });
+  const CLI_TOKEN = 'gho_FromCliToken1234567890';
+
+  it('정해 둔 명령으로 토큰을 받아 확인한 뒤 넣고, 계정 · 권한 범위 · 가져온 곳을 기록합니다', async () => {
+    const row = withCli();
+    const { svc, restarted } = service(fakeServer({ account: [200, { login: 'octo' }, { 'x-oauth-scopes': 'gist, read:org, repo' }] }));
+    const ran: [string, readonly string[]][] = [];
+    svc.runCli = async (command, args) => {
+      ran.push([command, args]);
+      return `${CLI_TOKEN}\n`;
+    };
+    const view = await svc.importCli(row.id);
+    expect(ran).toEqual([['svc-cli', ['auth', 'token']]]);
+    expect(view).toMatchObject({ pending: null, last: null, current: { account: 'octo', scope: 'gist, read:org, repo', via: 'cli' }, cli: { command: 'svc-cli', loginCommand: 'svc-cli auth login' } });
+    expect(h.app.settings.resolveModule(row.manifest).values['SVC_TOKEN']).toBe(CLI_TOKEN);
+    expect(restarted).toEqual([row.id]);
+    expect(h.app.store.listActivity(5).find((a) => a.moduleId === row.id)?.text).toBe('서비스 로그인 · @octo · svc-cli 로그인 가져옴');
+    expect(loginEvents(row.id)).toEqual(['done']);
+    expect(JSON.stringify(h.events)).not.toContain(CLI_TOKEN);
+    expect(JSON.stringify(h.app.store.listActivity(20))).not.toContain(CLI_TOKEN);
+  });
+
+  it('기다리던 화면 로그인은 멈추고 가져온 토큰을 씁니다', async () => {
+    const row = withCli();
+    withClient(row);
+    const { svc } = service(fakeServer({ device: DEVICE_OK, account: [200, { login: 'octo' }] }));
+    const signals: AbortSignal[] = [];
+    svc.sleep = (_ms, signal) => {
+      signals.push(signal);
+      return new Promise((r) => signal.addEventListener('abort', () => r(), { once: true }));
+    };
+    await svc.start(row.id, 'read');
+    svc.runCli = async () => CLI_TOKEN;
+    const view = await svc.importCli(row.id);
+    expect(view).toMatchObject({ pending: null, current: { via: 'cli' } });
+    await until(() => signals.length === 1, '기다림');
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it.each([
+    [Object.assign(new Error('spawn svc-cli ENOENT'), { code: 'ENOENT' }), "서버에 svc-cli 가 설치되어 있지 않습니다 (설치: https://example.com/cli). 설치하고 서버를 실행하는 계정으로 'svc-cli auth login' 을 한 뒤 다시 누르세요."],
+    [Object.assign(new Error('Command failed'), { code: 1, stderr: 'no oauth token found for example.com\nrun svc-cli auth login\n' }), "svc-cli 에서 로그인 정보를 받지 못했습니다: no oauth token found for example.com. 서버를 실행하는 계정으로 'svc-cli auth login' 을 한 뒤 다시 누르세요."],
+    [Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }), `svc-cli 가 ${CLI_TIMEOUT_MS / 1000}초 안에 답하지 않았습니다 (키체인 잠금 등). 서버를 실행하는 계정으로 'svc-cli auth login' 을 한 뒤 다시 누르세요.`],
+    ['', "svc-cli 가 토큰을 알려 주지 않았습니다. 서버를 실행하는 계정으로 'svc-cli auth login' 을 한 뒤 다시 누르세요."],
+    ['two words\n', "svc-cli 가 토큰을 알려 주지 않았습니다. 서버를 실행하는 계정으로 'svc-cli auth login' 을 한 뒤 다시 누르세요."],
+  ] as [Error | string, string][])('받지 못하면 넣지 않고 이유를 알립니다 (%#)', async (result, message) => {
+    const row = withCli();
+    const { svc } = service(fakeServer({}));
+    svc.runCli = async () => {
+      if (result instanceof Error) throw result;
+      return result;
+    };
+    await expect(svc.importCli(row.id)).rejects.toThrow(message);
+    expect(h.app.settings.resolveModule(row.manifest).values['SVC_TOKEN']).toBeUndefined();
+  });
+
+  it('받은 토큰을 서비스가 거절하면 넣지 않습니다', async () => {
+    const row = withCli();
+    const { svc } = service(fakeServer({ account: [401, { message: 'Bad credentials' }] }));
+    svc.runCli = async () => CLI_TOKEN;
+    await expect(svc.importCli(row.id)).rejects.toThrow("svc-cli 의 토큰을 api.example.com 가 거절했습니다 (401). 서버를 실행하는 계정으로 'svc-cli auth login' 을 다시 한 뒤 누르세요.");
+    expect(h.app.settings.resolveModule(row.manifest).values['SVC_TOKEN']).toBeUndefined();
+  });
+
+  it('직접 설치한 모듈 · 선언이 없는 모듈 · 승인 전 모듈은 명령을 실행하지 않습니다', async () => {
+    const { svc } = service(fakeServer({}));
+    let ran = 0;
+    svc.runCli = async () => {
+      ran += 1;
+      return CLI_TOKEN;
+    };
+    const fromGit = withCli({ origin: 'git' });
+    await expect(svc.importCli(fromGit.id)).rejects.toThrow("서버 로그인 가져오기는 기본 제공 모듈만 쓸 수 있습니다. '서비스'은(는) 직접 설치한 모듈입니다.");
+    expect(svc.view(fromGit)?.cli).toBeNull();
+    const plain = addModule();
+    await expect(svc.importCli(plain.id)).rejects.toThrow("'서비스' 모듈은 서버 로그인 가져오기를 지원하지 않습니다.");
+    const pending = withCli({ status: 'pending' });
+    await expect(svc.importCli(pending.id)).rejects.toThrow("'서비스' 모듈은 설치를 승인하기 전이라 로그인할 수 없습니다.");
+    expect(ran).toBe(0);
+  });
+
+  it('실제 실행: 셸 없이 정해 둔 인자만, 서버의 비밀값 · 토큰 변수 없이 최소 환경으로', async () => {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'sb-cli-')));
+    const seen = path.join(dir, 'seen.txt');
+    fs.writeFileSync(path.join(dir, 'fake-cli'), `#!/bin/sh\nenv > '${seen}'\nprintf '%s\\n' "$@" > '${seen}.args'\nprintf 'gho_FakeCliToken000\\n'\n`, { mode: 0o755 });
+    const saved = { PATH: process.env['PATH'], SB_TEST_SECRET: process.env['SB_TEST_SECRET'], GH_TOKEN: process.env['GH_TOKEN'] };
+    process.env['PATH'] = `${dir}:${saved.PATH ?? ''}`;
+    process.env['SB_TEST_SECRET'] = 'leak-me-please';
+    process.env['GH_TOKEN'] = 'gho_EnvTokenMustNotPass';
+    try {
+      expect((await runCliDefault('fake-cli', ['auth', 'token', '--hostname', 'example.com', '$(whoami)'])).trim()).toBe('gho_FakeCliToken000');
+      // 인자는 셸을 거치지 않아 그대로 갑니다.
+      expect(fs.readFileSync(`${seen}.args`, 'utf8').trim().split('\n')).toEqual(['auth', 'token', '--hostname', 'example.com', '$(whoami)']);
+      const env = fs.readFileSync(seen, 'utf8');
+      expect(env).not.toContain('leak-me-please');
+      expect(env).not.toContain('gho_EnvTokenMustNotPass');
+      expect(env).toContain(`PATH=${dir}:`);
+      const keys = env.split('\n').filter((l) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(l)).map((l) => l.slice(0, l.indexOf('=')));
+      // sh 가 스스로 붙이는 것 (PWD 등) 말고는 허용 목록에 있는 것만
+      const byShell = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', '__CF_USER_TEXT_ENCODING']);
+      expect(keys.filter((k) => !(CLI_ENV_KEYS as readonly string[]).includes(k) && !byShell.has(k))).toEqual([]);
+      await expect(runCliDefault('definitely-missing-cli-xyz', [])).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('로그인 API', () => {
   let server: FastifyInstance;
   let cookie = '';
@@ -418,6 +543,20 @@ describe('로그인 API', () => {
 
       const cancelled = await server.inject({ method: 'DELETE', url: `/api/modules/${row.id}/login`, headers: { cookie } });
       expect(cancelled.json().login).toMatchObject({ pending: null, last: { state: 'cancelled' } });
+
+      // 서버 CLI 로그인 가져오기 (기본 제공 모듈)
+      const cliRow = addModule({ enabled: false }, { login: { ...LOGIN, cli: CLI } });
+      const realRun = h.app.login.runCli;
+      h.app.login.runCli = async () => 'gho_FromRouteCli000';
+      h.app.login.fetch = fakeServer({ account: [200, { login: 'octo' }] }).fetchFn;
+      try {
+        const imported = await server.inject({ method: 'POST', url: `/api/modules/${cliRow.id}/login/cli`, headers: { cookie }, payload: {} });
+        expect(imported.statusCode).toBe(200);
+        expect(imported.body).not.toContain('gho_FromRouteCli000');
+        expect(imported.json().login.current).toMatchObject({ account: 'octo', via: 'cli' });
+      } finally {
+        h.app.login.runCli = realRun;
+      }
 
       h.app.store.setSetting(`module-login:${row.id}`, { account: 'octo', scope: 'read', at: 1, fp: 'x' });
       const put = await server.inject({ method: 'PUT', url: `/api/modules/${row.id}/settings`, headers: { cookie }, payload: { values: { SVC_TOKEN: 'github_pat_by_hand' } } });
