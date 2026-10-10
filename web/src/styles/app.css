@@ -1174,6 +1174,21 @@ a {
   border-color: var(--text2);
   transition: opacity 0.3s ease;
 }
+/* 에이전트 설정 창 아래의 삭제 확인 */
+.danger-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  font-size: 13px;
+  animation: rise 0.25s ease backwards;
+}
+.danger-confirm b {
+  color: var(--danger);
+}
 /* 에이전트 설정 창의 한도 칸 */
 .limit-grid {
   display: grid;

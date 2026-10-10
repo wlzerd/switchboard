@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AGENT_COLORS, agentNameProblem, NAME_MAX } from '../lib/agent';
 import { api, ApiError, errorText } from '../lib/api';
+import { writeDraft } from '../lib/drafts';
 import { heartbeatFormOf, heartbeatFormProblem, heartbeatPayload, intervalChoices, intervalLabel, receivesNotices, sameHeartbeat, type HeartbeatForm, type HeartbeatLimits } from '../lib/autonomy';
 import { relTime } from '../lib/format';
 import { countLimitChanges, limitDraft, limitLabel, limitNumbers, limitProblem, type LimitDraft } from '../lib/limits';
+import { navigate } from '../lib/router';
 import { refreshOverview, toast, useApp } from '../lib/store';
 import type { AgentLimits, AgentView, Effort, Meta, ModelInfo, ModuleView } from '../lib/types';
 import { Icon } from './Icon';
@@ -202,6 +204,10 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
   // sub: 서버가 거절한 한도 칸 (detail.field)
   const [error, setError] = useState<{ field: Field; text: string; sub?: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
+  // 삭제는 창을 하나 더 띄우지 않고 이 창 안에서 확인합니다 (Esc 로 두 창이 함께 닫히지 않게).
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -221,6 +227,22 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
   const pickModel = (m: ModelInfo): void => {
     setModel(m.id);
     if (effort && !m.efforts.includes(effort)) setEffort(null);
+  };
+
+  const remove = async (): Promise<void> => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api(`/api/agents/${agent.id}`, { method: 'DELETE' });
+      writeDraft(agent.id, '');
+      toast(`${agent.name}을(를) 삭제했습니다`, 'ok');
+      refreshOverview(0);
+      onClose();
+      navigate('/');
+    } catch (err) {
+      setDeleteError(errorText(err));
+      setDeleting(false);
+    }
   };
 
   const setLimit = (key: keyof AgentLimits, value: string): void => {
@@ -328,15 +350,43 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
             {error.text}
           </span>
         ) : null}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button type="button" className="btn" onClick={onClose}>
-            취소
-          </button>
-          <button type="submit" className="btn primary" disabled={busy || nameProblem !== null || limitsBad}>
-            {busy ? <span className="spinner" style={{ borderTopColor: 'var(--onAccent)' }} /> : null}
-            저장
-          </button>
-        </div>
+        {confirmDelete ? (
+          <div className="danger-confirm" role="alertdialog" aria-label={`${agent.name} 삭제`}>
+            <b>{agent.name} 삭제</b>
+            <span>대화 기록 · 작업 · 예약 · 모듈 연결이 함께 삭제되며 되돌릴 수 없습니다.</span>
+            {deleteError ? <span className="err">{deleteError}</span> : null}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setConfirmDelete(false);
+                  setDeleteError(null);
+                }}
+              >
+                취소
+              </button>
+              <button type="button" className="btn danger" disabled={deleting} onClick={() => void remove()}>
+                {deleting ? <span className="spinner" style={{ width: 13, height: 13 }} /> : <Icon name="trash" size={14} />}
+                삭제
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button type="button" className="btn danger sm" style={{ marginRight: 'auto' }} onClick={() => setConfirmDelete(true)}>
+              <Icon name="trash" size={14} />
+              에이전트 삭제
+            </button>
+            <button type="button" className="btn" onClick={onClose}>
+              취소
+            </button>
+            <button type="submit" className="btn primary" disabled={busy || nameProblem !== null || limitsBad}>
+              {busy ? <span className="spinner" style={{ borderTopColor: 'var(--onAccent)' }} /> : null}
+              저장
+            </button>
+          </div>
+        )}
       </form>
     </Modal>
   );

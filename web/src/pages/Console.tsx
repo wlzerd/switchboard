@@ -7,6 +7,7 @@ import { Avatar, Modal, ModuleIcon, Seg, StatusLine, Steps, Switch } from '../co
 import { EFFORT_LABEL } from '../lib/agent';
 import { api, errorText } from '../lib/api';
 import { attachmentsOf, DEFAULT_LIMITS, totalError } from '../lib/attachments';
+import { readDraft, writeDraft } from '../lib/drafts';
 import { MODE_LABEL } from '../lib/folders';
 import { delegationChips, intervalLabel } from '../lib/autonomy';
 import { clock, relTime } from '../lib/format';
@@ -17,7 +18,6 @@ import type { AgentView, AttachmentLimits, Meta, Overview, ScheduleView, TaskVie
 
 const ACTIVE: ReadonlySet<string> = new Set(['queued', 'running', 'waiting']);
 const MESSAGE_MAX = 20_000;
-const DRAFT_KEY = 'sb.draft.';
 
 function str(d: Record<string, unknown>, k: string): string {
   const v = d[k];
@@ -29,23 +29,6 @@ function without<T>(rec: Record<string, T>, key: string): Record<string, T> {
   const next = { ...rec };
   delete next[key];
   return next;
-}
-
-function readDraft(agentId: string): string {
-  try {
-    return localStorage.getItem(DRAFT_KEY + agentId) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function writeDraft(agentId: string, text: string): void {
-  try {
-    if (text) localStorage.setItem(DRAFT_KEY + agentId, text);
-    else localStorage.removeItem(DRAFT_KEY + agentId);
-  } catch {
-    // 저장소를 쓸 수 없으면 초안 기억만 빠집니다.
-  }
 }
 
 /* ───────── 타임라인 데이터 ───────── */
@@ -1007,7 +990,6 @@ function AgentPanel({ agent }: { agent: AgentView }) {
   const modules = useApp((s) => s.overview?.modules);
   const agents = useApp((s) => s.overview?.agents) ?? [];
   const [edit, setEdit] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const status = agent.paused ? 'paused' : agent.status;
   const preset = agent.preset === 'custom' ? '사용자 지정' : (meta.presets.find((p) => p.id === agent.preset)?.name ?? agent.preset);
@@ -1022,20 +1004,6 @@ function AgentPanel({ agent }: { agent: AgentView }) {
     } catch (err) {
       toast(errorText(err), 'error');
     } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (): Promise<void> => {
-    setBusy(true);
-    try {
-      await api(`/api/agents/${agent.id}`, { method: 'DELETE' });
-      writeDraft(agent.id, '');
-      toast(`${agent.name}을(를) 삭제했습니다`, 'ok');
-      refreshOverview(0);
-      navigate('/');
-    } catch (err) {
-      toast(errorText(err), 'error');
       setBusy(false);
     }
   };
@@ -1128,26 +1096,7 @@ function AgentPanel({ agent }: { agent: AgentView }) {
       ) : null}
       <HeartbeatStatus agent={agent} />
       <Schedules agentId={agent.id} />
-      <button type="button" className="btn danger sm" style={{ alignSelf: 'flex-start' }} onClick={() => setConfirmDelete(true)}>
-        <Icon name="trash" size={14} />
-        에이전트 삭제
-      </button>
       {edit ? <AgentEditModal agent={agent} onClose={() => setEdit(false)} /> : null}
-      {confirmDelete ? (
-        <Modal title={`${agent.name} 삭제`} onClose={() => setConfirmDelete(false)}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <span>대화 기록 · 작업 · 예약 · 모듈 연결이 함께 삭제되며 되돌릴 수 없습니다.</span>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button type="button" className="btn" onClick={() => setConfirmDelete(false)}>
-                취소
-              </button>
-              <button type="button" className="btn danger" disabled={busy} onClick={() => void remove()}>
-                삭제
-              </button>
-            </div>
-          </div>
-        </Modal>
-      ) : null}
     </aside>
   );
 }
