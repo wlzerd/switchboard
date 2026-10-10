@@ -331,7 +331,7 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
 
   server.patch<IdParams>('/api/agents/:id', async (req) => {
     const b = readBody(req);
-    return { agent: await manager.updateAgent(param(req, 'id'), { name: b['name'], color: b['color'], role: b['role'], keyId: b['keyId'], model: b['model'], effort: b['effort'] }) };
+    return { agent: await manager.updateAgent(param(req, 'id'), { name: b['name'], color: b['color'], role: b['role'], keyId: b['keyId'], model: b['model'], effort: b['effort'], limits: b['limits'] }) };
   });
 
   server.delete<IdParams>('/api/agents/:id', async (req) => {
@@ -347,7 +347,8 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
 
   server.put<IdParams>('/api/agents/:id/permissions', async (req) => {
     const b = readBody(req);
-    return { agent: manager.setPermissions(param(req, 'id'), b['permissions'], b['limits']) };
+    if (b['limits'] !== undefined) throw new ValidationError('limits_moved', '한도는 PATCH /api/agents/:id 에 limits 로 보내세요 (에이전트 설정 창).');
+    return { agent: manager.setPermissions(param(req, 'id'), b['permissions']) };
   });
 
   server.put<IdParams>('/api/agents/:id/modules', async (req) => {

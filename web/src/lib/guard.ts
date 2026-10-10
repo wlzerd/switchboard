@@ -1,4 +1,4 @@
-import type { AgentLimits, Meta, Mode, PermissionRule, RuleHook } from './types';
+import type { Meta, Mode, PermissionRule, RuleHook } from './types';
 
 /**
  * 권한 · 훅 화면의 입력 검사. 서버 검증(server/src/limits, server/src/hooks/rules.ts)과 같은 규칙으로
@@ -31,16 +31,6 @@ export const HOOK_REASON_MAX = 200;
 export const HOOK_CONDITIONS_MAX = 10;
 export const SCOPE_ITEMS_MAX = 50;
 export const PATTERN_MAX = 200;
-
-/** 한도 입력 문자열 검사 */
-export function limitProblem(raw: string, rule: { label: string; min: number; max: number }): string | null {
-  const t = raw.trim();
-  if (t === '') return `${rule.label} 값을 입력하세요.`;
-  if (!/^-?\d+$/.test(t)) return `${rule.label} 한도는 정수여야 합니다. 받은 값: ${t}`;
-  const n = Number(t);
-  if (n < rule.min || n > rule.max) return `${rule.label} 한도는 ${rule.min.toLocaleString()} 이상 ${rule.max.toLocaleString()} 이하여야 합니다.`;
-  return null;
-}
 
 /** 'HH:MM-HH:MM' 시간대 검사 (자정을 넘는 22:00-08:00 도 가능, 시작 = 끝은 빈 구간이라 불가) */
 export function windowProblem(value: string): string | null {
@@ -175,11 +165,5 @@ export function countPermissionChanges(a: Record<string, PermissionRule>, b: Rec
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
   let n = 0;
   for (const k of keys) if (JSON.stringify(a[k] ?? null) !== JSON.stringify(b[k] ?? null)) n += 1;
-  return n;
-}
-
-export function countLimitChanges(a: AgentLimits, b: Record<keyof AgentLimits, string>): number {
-  let n = 0;
-  for (const k of Object.keys(a) as (keyof AgentLimits)[]) if (String(a[k]) !== b[k].trim()) n += 1;
   return n;
 }

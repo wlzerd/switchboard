@@ -1174,6 +1174,15 @@ a {
   border-color: var(--text2);
   transition: opacity 0.3s ease;
 }
+/* 에이전트 설정 창의 한도 칸 */
+.limit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  gap: 12px;
+}
+.limit-field {
+  font-weight: 500;
+}
 .hb-box {
   display: flex;
   flex-direction: column;

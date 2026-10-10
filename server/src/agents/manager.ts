@@ -13,7 +13,7 @@ import { ConflictError, LimitError, ModuleError, NotFoundError, PermissionDenied
 import type { AgentLiveStatus, EventBus } from '../events/bus.ts';
 import type { GuardState } from '../guards/guards.ts';
 import type { HookEngine } from '../hooks/engine.ts';
-import { validateLimits, type AgentLimits } from '../limits/limits.ts';
+import { limitChanges, sameLimits, validateLimits, type AgentLimits } from '../limits/limits.ts';
 import type { Logger } from '../log.ts';
 import { TOOL_NAME_RE } from '../modules/manifest.ts';
 import type { InboundMessage } from '../modules/protocol.ts';
@@ -112,6 +112,8 @@ export interface AgentInput {
   preset: unknown;
   modules: unknown;
   delegation?: unknown;
+  /** 고칠 때만 (만들 때는 권한 프리셋의 한도) */
+  limits?: unknown;
 }
 
 export class AgentManager {
@@ -402,17 +404,25 @@ export class AgentManager {
       next.model = checked.model;
       next.effort = checked.effort;
     }
+    if (patch.limits !== undefined) {
+      const limits = validateLimits(patch.limits);
+      if (!sameLimits(limits, cur.limits)) next.limits = limits;
+    }
     const row = this.d.store.updateAgent(id, next);
+    if (next.limits) {
+      this.d.bus.activity({ type: 'agent.limits', category: 'hook', tone: 'pass', who: row.name, text: `한도를 바꿨습니다 · ${limitChanges(cur.limits, next.limits).join(', ')}`, agentId: id });
+      // 동시 작업 한도를 올렸으면 기다리던 작업을 바로 시작합니다.
+      this.runtimeFor(id).pump();
+    }
     this.d.bus.emit({ type: 'graph.changed' });
     return row;
   }
 
-  setPermissions(id: string, permissionsRaw: unknown, limitsRaw: unknown): AgentRow {
+  setPermissions(id: string, permissionsRaw: unknown): AgentRow {
     this.d.store.getAgent(id);
     const permissions: PermissionSet = validatePermissionSet(permissionsRaw, this.permissionDefs());
-    const limits: AgentLimits = validateLimits(limitsRaw);
-    const row = this.d.store.updateAgent(id, { permissions, limits, preset: 'custom' });
-    this.d.bus.activity({ type: 'agent.permissions', category: 'hook', tone: 'pass', who: row.name, text: '권한·한도 설정을 바꿨습니다', agentId: id });
+    const row = this.d.store.updateAgent(id, { permissions, preset: 'custom' });
+    this.d.bus.activity({ type: 'agent.permissions', category: 'hook', tone: 'pass', who: row.name, text: '권한 설정을 바꿨습니다', agentId: id });
     this.d.bus.emit({ type: 'graph.changed' });
     return row;
   }

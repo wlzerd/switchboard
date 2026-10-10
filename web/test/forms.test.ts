@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { agentNameProblem, NAME_MAX, nextFreeName } from '../src/lib/agent';
-import { countLimitChanges, countPermissionChanges, hookDraftProblems, limitProblem, patternProblem, regexProblem, windowProblem, type HookDraft } from '../src/lib/guard';
+import { countPermissionChanges, hookDraftProblems, patternProblem, regexProblem, windowProblem, type HookDraft } from '../src/lib/guard';
+import { countLimitChanges, limitLabel, limitNumbers, limitProblem, tokenLimitText } from '../src/lib/limits';
 import { parseThemeJson } from '../src/lib/theme';
 import type { Meta } from '../src/lib/types';
 
@@ -44,7 +45,7 @@ describe('에이전트 이름', () => {
 });
 
 describe('한도 입력', () => {
-  const rule = { label: '동시 작업', min: 1, max: 8 };
+  const rule = { label: '동시 작업', unit: '개', min: 1, max: 8 };
   it.each([
     ['', '동시 작업 값을 입력하세요.'],
     ['  ', '동시 작업 값을 입력하세요.'],
@@ -60,12 +61,36 @@ describe('한도 입력', () => {
     expect(limitProblem(raw, rule)).toBe(want);
   });
 
-  it('큰 한도의 경계 (일일 토큰 1,000 ~ 10,000,000)', () => {
-    const tokens = { label: '일일 토큰', min: 1000, max: 10_000_000 };
-    expect(limitProblem('999', tokens)).not.toBeNull();
-    expect(limitProblem('1000', tokens)).toBeNull();
-    expect(limitProblem('10000000', tokens)).toBeNull();
-    expect(limitProblem('10000001', tokens)).not.toBeNull();
+  // 일일 토큰: 0 은 한도 무제한, 그 밖에는 1,000 이상 (위쪽 제한 없음)
+  const tokens = { label: '일일 토큰', unit: '토큰', min: 1000, max: null, zero: '한도 무제한' };
+  it.each([
+    ['0', null],
+    ['00', null],
+    ['1', '1,000 미만으로는 설정할 수 없습니다.'],
+    ['999', '1,000 미만으로는 설정할 수 없습니다.'],
+    ['-1', '1,000 미만으로는 설정할 수 없습니다.'],
+    ['1000', null],
+    ['10000001', null],
+    ['9007199254740991', null],
+    ['9007199254740992', '너무 큰 값입니다. 한도를 없애려면 0을 넣으세요.'],
+    ['', '일일 토큰 값을 입력하세요.'],
+    ['1,000', '일일 토큰 한도는 정수여야 합니다. 받은 값: 1,000'],
+  ])('일일 토큰 %j → %j', (raw, want) => {
+    expect(limitProblem(raw, tokens)).toBe(want);
+  });
+
+  it('0 이 한도 없음인 칸만 이름에 그 뜻을 붙이고, 표시는 무제한', () => {
+    expect(limitLabel(tokens)).toBe('일일 토큰(0:한도 무제한)');
+    expect(limitLabel(rule)).toBe('동시 작업');
+    expect([tokenLimitText(0), tokenLimitText(500_000), tokenLimitText(20_000_000)]).toEqual(['무제한', '500K', '20M']);
+  });
+
+  it('위쪽 제한이 없는 칸의 범위 문구', () => {
+    expect(limitProblem('0', { label: '분당 메시지', unit: '건', min: 1, max: null })).toBe('분당 메시지 한도는 1 이상이어야 합니다.');
+  });
+
+  it('보낼 숫자: 앞뒤 공백을 지우고 정수로', () => {
+    expect(limitNumbers({ tokensPerDay: ' 0 ', stepsPerTask: '40', concurrency: '2', messagesPerMinute: '20' }, ['tokensPerDay', 'stepsPerTask', 'concurrency', 'messagesPerMinute'])).toEqual({ tokensPerDay: 0, stepsPerTask: 40, concurrency: 2, messagesPerMinute: 20 });
   });
 });
 

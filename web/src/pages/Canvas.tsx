@@ -22,6 +22,7 @@ import { api, errorText } from '../lib/api';
 import { delegationChips, intervalLabel } from '../lib/autonomy';
 import { MODE_LABEL } from '../lib/folders';
 import { clock, compactTokens, percent, relTime } from '../lib/format';
+import { tokenLimitText } from '../lib/limits';
 import { arcPath, layoutGraph, relatedTo, type LayoutEdge } from '../lib/graph';
 import { navigate } from '../lib/router';
 import { toast, useApp } from '../lib/store';
@@ -487,6 +488,7 @@ function Inspector({ agent, overview, onClose }: { agent: AgentView; overview: O
   const modules = agent.links.map((l) => overview.modules.find((m) => m.id === l.moduleId)).filter((m): m is ModuleView => m !== undefined && m.kind === 'module');
   const screenInUse = overview.modules.find((m) => m.screenHolder?.agentId === agent.id);
   const creating = overview.edges.filter((e) => e.from === agent.id && e.kind === 'creating');
+  const unlimited = agent.tokenLimit === 0;
   const used = percent(agent.tokensToday, agent.tokenLimit);
   const nameOf = (id: string): string => overview.agents.find((a) => a.id === id)?.name ?? '삭제된 에이전트';
   const handing = overview.edges.filter((e) => e.kind === 'delegating' && (e.from === agent.id || e.to === agent.id));
@@ -648,12 +650,14 @@ function Inspector({ agent, overview, onClose }: { agent: AgentView; overview: O
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
           <span className="dim">오늘 토큰</span>
           <span className="mono">
-            {compactTokens(agent.tokensToday)} / {compactTokens(agent.tokenLimit)}
+            {compactTokens(agent.tokensToday)} / {tokenLimitText(agent.tokenLimit)}
           </span>
         </div>
-        <span className="progress" style={{ height: 6 }}>
-          <span style={{ width: `${used}%`, background: used >= 90 ? 'var(--danger)' : 'var(--msg)' }} />
-        </span>
+        {!unlimited ? (
+          <span className="progress" style={{ height: 6 }}>
+            <span style={{ width: `${used}%`, background: used >= 90 ? 'var(--danger)' : 'var(--msg)' }} />
+          </span>
+        ) : null}
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         <button type="button" className="btn primary" style={{ flex: '1 1 120px' }} onClick={() => navigate(`/console/${agent.id}`)}>

@@ -8,14 +8,12 @@ import { delegationProblem } from '../lib/autonomy';
 import { folderChanges, type FolderView } from '../lib/folders';
 import {
   ACTION_LABEL,
-  countLimitChanges,
   countPermissionChanges,
   EVENT_LABEL,
   HOOK_CONDITIONS_MAX,
   HOOK_NAME_MAX,
   HOOK_REASON_MAX,
   hookDraftProblems,
-  limitProblem,
   MODE_LABEL,
   OP_LABEL,
   patternProblem,
@@ -24,7 +22,7 @@ import {
 } from '../lib/guard';
 import { navigate } from '../lib/router';
 import { refreshOverview, toast, useApp } from '../lib/store';
-import type { AgentLimits, AgentView, DelegationSettings, GuardDef, HookOutcome, HooksResponse, Meta, Mode, Overview, PermissionDef, PermissionRule, RuleHook } from '../lib/types';
+import type { AgentView, DelegationSettings, GuardDef, HookOutcome, HooksResponse, Meta, Mode, Overview, PermissionDef, PermissionRule, RuleHook } from '../lib/types';
 
 /* ───────── 권한 ───────── */
 
@@ -36,12 +34,6 @@ const SCOPE_HINT: Record<PermissionDef['scope'], string> = {
   manager: '모든 관리자 · 예: npm',
   none: '',
 };
-
-type LimitDraft = Record<keyof AgentLimits, string>;
-
-function limitDraft(l: AgentLimits): LimitDraft {
-  return { tokensPerDay: String(l.tokensPerDay), stepsPerTask: String(l.stepsPerTask), concurrency: String(l.concurrency), messagesPerMinute: String(l.messagesPerMinute) };
-}
 
 function PermRow({ def, rule, error, onChange }: { def: PermissionDef; rule: PermissionRule; error: string | null; onChange: (r: PermissionRule) => void }) {
   if (def.locked) {
@@ -103,9 +95,8 @@ function PermRow({ def, rule, error, onChange }: { def: PermissionDef; rule: Per
 }
 
 function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
-  const [base, setBase] = useState<{ permissions: Record<string, PermissionRule>; limits: AgentLimits } | null>(null);
+  const [base, setBase] = useState<{ permissions: Record<string, PermissionRule> } | null>(null);
   const [perms, setPerms] = useState<Record<string, PermissionRule>>({});
-  const [limits, setLimits] = useState<LimitDraft | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState<{ key: string | null; field: string | null; text: string; index?: number | null } | null>(null);
@@ -116,11 +107,10 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
 
   const load = useCallback(() => {
     setLoadError(null);
-    api<{ agent: { permissions: Record<string, PermissionRule>; limits: AgentLimits } }>(`/api/agents/${agent.id}`)
+    api<{ agent: { permissions: Record<string, PermissionRule> } }>(`/api/agents/${agent.id}`)
       .then((r) => {
-        setBase({ permissions: r.agent.permissions, limits: r.agent.limits });
+        setBase({ permissions: r.agent.permissions });
         setPerms(r.agent.permissions);
-        setLimits(limitDraft(r.agent.limits));
       })
       .catch((err: unknown) => setLoadError(errorText(err)));
   }, [agent.id]);
@@ -147,7 +137,7 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
       </div>
     );
   }
-  if (!base || !limits) {
+  if (!base) {
     return (
       <div className="card empty">
         <span className="spinner" />
@@ -155,22 +145,19 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
     );
   }
 
-  const limitKeys = Object.keys(meta.limitRules) as (keyof AgentLimits)[];
-  const limitProblems = limitKeys.map((k) => [k, limitProblem(limits[k], meta.limitRules[k])] as const).filter(([, p]) => p !== null);
-  const permChanges = countPermissionChanges(base.permissions, perms) + countLimitChanges(base.limits, limits);
+  const permChanges = countPermissionChanges(base.permissions, perms);
   const delegationChanges = (['accept', 'send', 'supervisorId'] as const).filter((k) => delegation[k] !== agent.delegation[k]).length;
   const shownFolders = folders ?? agent.folders;
   const foldersChanged = folders ? folderChanges(agent.folders, folders) : 0;
   const changes = permChanges + delegationChanges + foldersChanged;
   const dlgProblem = delegationChanges > 0 ? delegationProblem(delegation, agents, agent.id) : null;
-  const problems = limitProblems.length + (dlgProblem ? 1 : 0);
+  const problems = dlgProblem ? 1 : 0;
   const ruleOf = (d: PermissionDef): PermissionRule => perms[d.key] ?? { mode: d.locked ? 'deny' : 'ask', scope: [], always: [] };
 
   const save = async (): Promise<void> => {
     if (problems > 0) return;
     setSaving(true);
     setServerError(null);
-    const numbers = Object.fromEntries(limitKeys.map((k) => [k, Number(limits[k].trim())])) as unknown as AgentLimits;
     const full: Record<string, PermissionRule> = {};
     for (const d of meta.permissionDefs) full[d.key] = ruleOf(d);
     try {
@@ -194,10 +181,9 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
         }
       }
       if (permChanges > 0) {
-        const r = await api<{ agent: { permissions: Record<string, PermissionRule>; limits: AgentLimits } }>(`/api/agents/${agent.id}/permissions`, { method: 'PUT', body: { permissions: full, limits: numbers } });
-        setBase({ permissions: r.agent.permissions, limits: r.agent.limits });
+        const r = await api<{ agent: { permissions: Record<string, PermissionRule> } }>(`/api/agents/${agent.id}/permissions`, { method: 'PUT', body: { permissions: full } });
+        setBase({ permissions: r.agent.permissions });
         setPerms(r.agent.permissions);
-        setLimits(limitDraft(r.agent.limits));
       }
       toast('저장됨 · 다음 도구 호출부터 적용', 'ok');
       refreshOverview(0);
@@ -214,7 +200,6 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
 
   const revert = (): void => {
     setPerms(base.permissions);
-    setLimits(limitDraft(base.limits));
     setDelegation(agent.delegation);
     setFolders(null);
     setServerError(null);
@@ -274,30 +259,6 @@ function PermissionsEditor({ agent, meta }: { agent: AgentView; meta: Meta }) {
             error={serverError?.field === 'folders' ? serverError.text : null}
             errorIndex={serverError?.field === 'folders' ? (serverError.index ?? null) : null}
           />
-        </div>
-      </section>
-
-      <section className="card" aria-label="한도">
-        <div className="card-head">
-          <h2>한도</h2>
-        </div>
-        <div className="card-pad" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))', gap: 14 }}>
-          {limitKeys.map((k) => {
-            const rule = meta.limitRules[k];
-            const problem = limitProblem(limits[k], rule) ?? (serverError?.field === k ? serverError.text : null);
-            return (
-              <label key={k} className="field">
-                {rule.label}
-                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input className={`input mono${problem ? ' bad' : ''}`} style={{ flex: 1, minWidth: 0 }} inputMode="numeric" value={limits[k]} onChange={(e) => setLimits({ ...limits, [k]: e.target.value })} aria-invalid={problem !== null} />
-                  <span className="muted" style={{ fontWeight: 500 }}>
-                    {rule.unit}
-                  </span>
-                </span>
-                {problem ? <span className="err">{problem}</span> : null}
-              </label>
-            );
-          })}
         </div>
       </section>
 

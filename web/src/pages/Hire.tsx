@@ -7,7 +7,7 @@ import { Avatar, ChipInput, ModuleIcon, Seg, Switch } from '../components/ui';
 import { AGENT_COLORS, agentNameProblem, EFFORT_LABEL, NAME_MAX, nextFreeName } from '../lib/agent';
 import { api, ApiError, errorText } from '../lib/api';
 import { DEFAULT_DELEGATION, delegationChips } from '../lib/autonomy';
-import { compactTokens } from '../lib/format';
+import { tokenLimitText } from '../lib/limits';
 import { navigate } from '../lib/router';
 import { refreshOverview, useApp } from '../lib/store';
 import type { DelegationSettings, Effort, Meta, Mode, ModelInfo, ModuleView, Overview } from '../lib/types';
@@ -258,7 +258,7 @@ function PresetStep({ meta, value, onChange }: { meta: Meta; value: string; onCh
               })}
               <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5 }}>
                 <span className="dim">하루 토큰</span>
-                <span className="mono">{compactTokens(p.limits.tokensPerDay)}</span>
+                <span className="mono">{tokenLimitText(p.limits.tokensPerDay)}</span>
               </span>
             </span>
           </button>

@@ -60,6 +60,17 @@ export interface AgentLimits {
   messagesPerMinute: number;
 }
 
+/** 한도 한 항목의 입력 규칙 (서버 LIMIT_RULES) */
+export interface LimitRule {
+  label: string;
+  unit: string;
+  min: number;
+  /** null 이면 위쪽 제한 없음 */
+  max: number | null;
+  /** 0 을 넣으면 한도를 두지 않는 항목이면 그 뜻 ('한도 무제한') */
+  zero?: string;
+}
+
 export interface AgentView {
   id: string;
   name: string;
@@ -302,7 +313,7 @@ export interface GuardDef {
 export interface Meta {
   permissionDefs: PermissionDef[];
   presets: { id: string; name: string; permissions: Record<string, PermissionRule>; message: Mode; limits: AgentLimits }[];
-  limitRules: Record<keyof AgentLimits, { label: string; unit: string; min: number; max: number }>;
+  limitRules: Record<keyof AgentLimits, LimitRule>;
   efforts: Effort[];
   hookEvents: string[];
   hookFields: Record<string, string[]>;

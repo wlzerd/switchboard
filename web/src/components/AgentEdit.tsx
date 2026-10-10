@@ -3,21 +3,52 @@ import { AGENT_COLORS, agentNameProblem, NAME_MAX } from '../lib/agent';
 import { api, ApiError, errorText } from '../lib/api';
 import { heartbeatFormOf, heartbeatFormProblem, heartbeatPayload, intervalChoices, intervalLabel, receivesNotices, sameHeartbeat, type HeartbeatForm, type HeartbeatLimits } from '../lib/autonomy';
 import { relTime } from '../lib/format';
+import { countLimitChanges, limitDraft, limitLabel, limitNumbers, limitProblem, type LimitDraft } from '../lib/limits';
 import { refreshOverview, toast, useApp } from '../lib/store';
-import type { AgentView, Effort, Meta, ModelInfo, ModuleView } from '../lib/types';
+import type { AgentLimits, AgentView, Effort, Meta, ModelInfo, ModuleView } from '../lib/types';
 import { Icon } from './Icon';
 import { Avatar, Modal, Seg, Switch } from './ui';
 import { EffortPicker, ModelPicker } from './ModelPicker';
 
-type Field = 'name' | 'color' | 'role' | 'model' | 'heartbeat' | 'form';
+type Field = 'name' | 'color' | 'role' | 'model' | 'limits' | 'heartbeat' | 'form';
 
 function fieldOf(code: string): Field {
   if (code.startsWith('agent_name')) return 'name';
   if (code === 'agent_color') return 'color';
   if (code.startsWith('agent_role')) return 'role';
   if (code.startsWith('agent_model') || code.startsWith('agent_effort') || code.startsWith('key_') || code.startsWith('anthropic')) return 'model';
+  if (code.startsWith('limit')) return 'limits';
   if (code.startsWith('heartbeat') || code.startsWith('report')) return 'heartbeat';
   return 'form';
+}
+
+/** 한도: 칸마다 입력하는 즉시 검사해 아래에 이유를 붉은 글씨로 보여 줍니다. server 는 서버가 거절한 칸과 이유 */
+function LimitFields({ rules, draft, set, server }: { rules: Meta['limitRules']; draft: LimitDraft; set: (key: keyof AgentLimits, value: string) => void; server: { field: string | null; text: string } | null }) {
+  const keys = Object.keys(rules) as (keyof AgentLimits)[];
+  return (
+    <div className="field">
+      한도
+      <div className="limit-grid">
+        {keys.map((k) => {
+          const rule = rules[k];
+          const problem = limitProblem(draft[k], rule) ?? (server?.field === k ? server.text : null);
+          return (
+            <label key={k} className="field limit-field">
+              {limitLabel(rule)}
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input className={`input mono${problem ? ' bad' : ''}`} style={{ flex: 1, minWidth: 0 }} inputMode="numeric" value={draft[k]} onChange={(e) => set(k, e.target.value)} aria-invalid={problem !== null} />
+                <span className="muted" style={{ fontWeight: 500 }}>
+                  {rule.unit}
+                </span>
+              </span>
+              {problem ? <span className="err">{problem}</span> : null}
+            </label>
+          );
+        })}
+      </div>
+      {server && !server.field ? <span className="err">{server.text}</span> : null}
+    </div>
+  );
 }
 
 /**
@@ -163,7 +194,13 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
   const [effort, setEffort] = useState<Effort | null>(agent.effort);
   const [models, setModels] = useState<{ latest: ModelInfo[]; older: ModelInfo[] } | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
-  const [error, setError] = useState<{ field: Field; text: string } | null>(null);
+  const rules = meta.limitRules;
+  const limitKeys = Object.keys(rules) as (keyof AgentLimits)[];
+  const [limitsDraft, setLimitsDraft] = useState<LimitDraft>(() => limitDraft(agent.limits));
+  const limitsDirty = countLimitChanges(agent.limits, limitsDraft) > 0;
+  const limitsBad = limitKeys.some((k) => limitProblem(limitsDraft[k], rules[k]) !== null);
+  // sub: 서버가 거절한 한도 칸 (detail.field)
+  const [error, setError] = useState<{ field: Field; text: string; sub?: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -186,6 +223,11 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
     if (effort && !m.efforts.includes(effort)) setEffort(null);
   };
 
+  const setLimit = (key: keyof AgentLimits, value: string): void => {
+    setLimitsDraft((d) => ({ ...d, [key]: value }));
+    if (error?.field === 'limits') setError(null);
+  };
+
   const setHeartbeat = (patch: Partial<HeartbeatForm>): void => {
     setHb((f) => ({ ...f, ...patch }));
     if (error?.field === 'heartbeat') setError(null);
@@ -196,6 +238,7 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
       setError({ field: 'name', text: nameProblem });
       return;
     }
+    if (limitsBad) return;
     const hbProblem = hbDirty ? heartbeatFormProblem(hb, limits, modules) : null;
     if (hbProblem) {
       setError({ field: 'heartbeat', text: hbProblem });
@@ -207,6 +250,8 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
     if (role.trim() !== agent.role) patch['role'] = role.trim();
     if (model !== agent.model) patch['model'] = model;
     if (effort !== agent.effort) patch['effort'] = effort;
+    const newLimits = limitsDirty ? limitNumbers(limitsDraft, limitKeys) : null;
+    if (newLimits) patch['limits'] = newLimits;
     if (Object.keys(patch).length === 0 && !hbDirty) {
       onClose();
       return;
@@ -221,11 +266,13 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
       if (hbDirty) await api(`/api/agents/${agent.id}/heartbeat`, { method: 'PUT', body: heartbeatPayload(hb) });
       refreshOverview(0);
       const turned = hbDirty && hb.enabled !== hbSaved.enabled ? (hb.enabled ? ` · 하트비트 ${intervalLabel(hb.everyMinutes)}마다` : ' · 하트비트 끔') : '';
-      toast(`${name.trim()} 설정을 저장했습니다${turned}`, 'ok');
+      const tokens = newLimits && newLimits.tokensPerDay !== agent.limits.tokensPerDay ? ` · 일일 토큰 ${newLimits.tokensPerDay === 0 ? '무제한' : newLimits.tokensPerDay.toLocaleString()}` : '';
+      toast(`${name.trim()} 설정을 저장했습니다${tokens}${turned}`, 'ok');
       onClose();
     } catch (err) {
       if (stage === 'heartbeat') refreshOverview(0);
-      setError({ field: stage === 'heartbeat' ? 'heartbeat' : err instanceof ApiError ? fieldOf(err.code) : 'form', text: errorText(err) });
+      const sub = err instanceof ApiError && typeof err.detail?.['field'] === 'string' ? err.detail['field'] : null;
+      setError({ field: stage === 'heartbeat' ? 'heartbeat' : err instanceof ApiError ? fieldOf(err.code) : 'form', text: errorText(err), sub });
     } finally {
       setBusy(false);
     }
@@ -274,6 +321,7 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
           <EffortPicker model={info} value={effort} onChange={setEffort} />
           {error?.field === 'model' ? <span className="err">{error.text}</span> : null}
         </div>
+        <LimitFields rules={rules} draft={limitsDraft} set={setLimit} server={error?.field === 'limits' ? { field: error.sub ?? null, text: error.text } : null} />
         <HeartbeatFields form={hb} set={setHeartbeat} limits={limits} senders={modules.filter((m) => m.canSend)} notices={receivesNotices(agent, modules)} lastAt={agent.heartbeat?.lastAt ?? null} error={error?.field === 'heartbeat' ? error.text : null} />
         {error?.field === 'form' ? (
           <span className="err" role="alert">
@@ -284,7 +332,7 @@ export function AgentEditModal({ agent, onClose }: { agent: AgentView; onClose: 
           <button type="button" className="btn" onClick={onClose}>
             취소
           </button>
-          <button type="submit" className="btn primary" disabled={busy || nameProblem !== null}>
+          <button type="submit" className="btn primary" disabled={busy || nameProblem !== null || limitsBad}>
             {busy ? <span className="spinner" style={{ borderTopColor: 'var(--onAccent)' }} /> : null}
             저장
           </button>
