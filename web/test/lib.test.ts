@@ -99,7 +99,7 @@ describe('그래프 배치', () => {
     ({
       server: { startedAt: 0, now: 0, tz: 'UTC', tokensToday: 0, approvalsPending: 0, envKey: false },
       agents: Array.from({ length: agents }, (_, i) => ({ id: `a${i}`, delegation: { accept: false, send: false, supervisorId: null } })),
-      modules: Array.from({ length: modules }, (_, i) => ({ id: `m${i}`, status: 'running' })),
+      modules: Array.from({ length: modules }, (_, i) => ({ id: `m${i}`, status: 'running', channel: true, computer: false, enabled: true })),
       skills: Array.from({ length: skills }, (_, i) => ({ id: `s${i}` })),
       builtinNodes: [{ id: 'builtin:web', label: '웹', tools: [] }],
       edges: [
@@ -135,6 +135,24 @@ describe('그래프 배치', () => {
     const { nodes, edges } = layoutGraph(overview(0, 0, 0));
     expect(nodes).toEqual([]);
     expect(edges).toEqual([]);
+  });
+
+  it('도구만 있는 모듈(채널 없음)은 오른쪽 줄의 도구로: 켜져 있거나 연결 · 설치 대기 중인 것만', () => {
+    const o = overview(1, 1, 0);
+    const tool = (id: string, extra: Record<string, unknown>) => ({ id, status: 'running', channel: false, computer: false, enabled: false, ...extra });
+    o.modules.push(
+      tool('search', { enabled: true }) as never,
+      tool('off', {}) as never,
+      tool('linked', {}) as never,
+      tool('waiting', { status: 'pending' }) as never,
+      tool('gone', { enabled: true, status: 'rejected' }) as never,
+    );
+    o.edges.push({ from: 'a0', to: 'module:linked', kind: 'skill' }, { from: 'a0', to: 'module:search', kind: 'skill' });
+    const { nodes, edges } = layoutGraph(o);
+    expect(nodes.filter((n) => n.kind === 'tool').map((n) => n.id)).toEqual(['module:search', 'module:linked', 'module:waiting']);
+    expect(nodes.filter((n) => n.kind === 'tool').every((n) => n.x === COLUMN.skill.x)).toBe(true);
+    expect(nodes.filter((n) => n.kind === 'module').map((n) => n.id)).toEqual(['module:m0']);
+    expect(edges.map((e) => e.id)).toContain('a0->module:search');
   });
 
   it('선택한 노드와 바로 이어진 노드만 관련으로 본다', () => {

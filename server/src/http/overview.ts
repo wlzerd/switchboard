@@ -105,8 +105,8 @@ export function buildOverview(app: App) {
   for (const l of links) {
     const m = modules.find((x) => x.id === l.moduleId);
     if (!m) continue;
-    // 화면 제어 모듈은 에이전트가 쓰는 도구라 스킬처럼 에이전트 → 모듈 방향으로 잇습니다.
-    if (m.kind === 'module' && m.manifest.computer) edges.push({ from: l.agentId, to: `module:${m.id}`, kind: 'skill' });
+    // 화면 제어 · 검색처럼 에이전트가 부르는 도구만 있는 모듈(채널 없음)은 스킬처럼 에이전트 → 모듈 방향으로 잇습니다.
+    if (m.kind === 'module' && (m.manifest.computer || !m.manifest.channel)) edges.push({ from: l.agentId, to: `module:${m.id}`, kind: 'skill' });
     else if (m.kind === 'module') edges.push({ from: `module:${m.id}`, to: l.agentId, kind: 'message' });
     else edges.push({ from: l.agentId, to: `skill:${m.id}`, kind: Date.now() - m.installedAt < NEW_SKILL_MS && m.createdBy === l.agentId ? 'new' : 'skill' });
   }

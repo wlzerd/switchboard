@@ -215,6 +215,33 @@ function ScreenNode({ data }: NodeProps<Node<ScreenData, 'screen'>>) {
   );
 }
 
+/** 도구만 있는 모듈 (검색 등): 에이전트가 부르는 도구라 오른쪽 줄에 둡니다. */
+function ToolNode({ data }: NodeProps<Node<ScreenData, 'tool'>>) {
+  const m = data.module;
+  const failed = m.status === 'failed' || m.status === 'crashed';
+  const handle = handleStyle(data.dim ? 0.38 : m.enabled || m.status === 'pending' ? 1 : 0.6, data.delay);
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="gh skill" style={handle} isConnectable={false} />
+      <div
+        className={`gnode${m.status === 'pending' ? ' creating' : ''}${failed ? ' failed' : ''}`}
+        style={{ position: 'relative', width: 200, height: 54, opacity: handle.opacity, animationDelay: `${data.delay}s` }}
+        title={m.statusDetail ?? undefined}
+      >
+        <span className="tile" style={{ width: 26, height: 26, borderRadius: 7, background: 'var(--skill-dim)', color: 'var(--skill)' }}>
+          <ModuleIcon icon={m.icon} size={15} />
+        </span>
+        <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.25 }}>
+          <span className="title">{m.name}</span>
+          <span className="sub" style={{ color: failed ? 'var(--danger)' : m.status === 'pending' ? 'var(--warn)' : undefined }}>
+            {moduleSub(m)}
+          </span>
+        </span>
+      </div>
+    </>
+  );
+}
+
 const BUILTIN_ICON: Record<string, string> = { 'builtin:web': 'globe', 'builtin:http': 'link', 'builtin:shell': 'terminal', 'builtin:fs': 'folder' };
 
 /* ───────── 선 ───────── */
@@ -270,7 +297,7 @@ function LabelNode({ data }: NodeProps<Node<{ text: string }, 'label'>>) {
   return <div className="col-label">{data.text}</div>;
 }
 
-const nodeTypes = { agent: AgentNode, module: ModuleNode, skill: SkillNode, screen: ScreenNode, label: LabelNode };
+const nodeTypes = { agent: AgentNode, module: ModuleNode, skill: SkillNode, screen: ScreenNode, tool: ToolNode, label: LabelNode };
 const edgeTypes = { flow: FlowEdge };
 
 /* ───────── 그래프 ───────── */
@@ -348,9 +375,9 @@ function Graph({ overview, selected, onSelect }: { overview: Overview; selected:
           const module = overview.modules.find((m) => m.id === n.ref) as ModuleView;
           return { ...base, type: 'module', data: { module, dim, delay } satisfies ModuleData };
         }
-        if (n.kind === 'screen') {
+        if (n.kind === 'screen' || n.kind === 'tool') {
           const module = overview.modules.find((m) => m.id === n.ref) as ModuleView;
-          return { ...base, type: 'screen', data: { module, dim, delay } satisfies ScreenData };
+          return { ...base, type: n.kind, data: { module, dim, delay } satisfies ScreenData };
         }
         if (n.kind === 'skill') {
           const skill = overview.skills.find((m) => m.id === n.ref) ?? null;
@@ -369,8 +396,8 @@ function Graph({ overview, selected, onSelect }: { overview: Overview; selected:
       { id: 'label:agent', text: `에이전트 ${overview.agents.length}`, kinds: ['agent'] },
       {
         id: 'label:skill',
-        text: `스킬 ${overview.skills.length} · 내장 도구 ${layout.nodes.filter((n) => n.kind === 'builtin').length}${layout.nodes.some((n) => n.kind === 'screen') ? ` · 화면 ${layout.nodes.filter((n) => n.kind === 'screen').length}` : ''}`,
-        kinds: ['skill', 'builtin', 'screen'],
+        text: `스킬 ${overview.skills.length} · 내장 도구 ${layout.nodes.filter((n) => n.kind === 'builtin').length}${layout.nodes.some((n) => n.kind === 'tool') ? ` · 도구 ${layout.nodes.filter((n) => n.kind === 'tool').length}` : ''}${layout.nodes.some((n) => n.kind === 'screen') ? ` · 화면 ${layout.nodes.filter((n) => n.kind === 'screen').length}` : ''}`,
+        kinds: ['skill', 'builtin', 'screen', 'tool'],
       },
     ];
     const out: Node[] = [];

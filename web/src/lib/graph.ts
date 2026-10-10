@@ -1,6 +1,6 @@
 import type { DelegationSettings, EdgeKind, Overview } from './types';
 
-export type NodeKind = 'module' | 'agent' | 'skill' | 'builtin' | 'screen';
+export type NodeKind = 'module' | 'agent' | 'skill' | 'builtin' | 'screen' | 'tool';
 
 export interface LayoutNode {
   id: string;
@@ -76,13 +76,15 @@ const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|$
  */
 export function layoutGraph(o: Overview, saved: Record<string, { x: number; y: number }> = {}): { nodes: LayoutNode[]; edges: LayoutEdge[] } {
   const agentIds = new Set(o.agents.map((a) => a.id));
-  // 화면 제어 모듈은 에이전트가 쓰는 도구라 오른쪽 줄에 둡니다. 켜져 있거나 연결된 것만 보입니다.
+  // 화면 제어 모듈과 도구만 있는 모듈(채널 없음: 검색 등)은 에이전트가 부르는 도구라 오른쪽 줄에 둡니다.
+  // 켜져 있거나 연결된 것(도구 모듈은 설치 승인 대기 중인 것도)만 보입니다.
   const linked = new Set(o.edges.filter((e) => agentIds.has(e.from)).map((e) => e.to));
-  const modules = o.modules.filter((m) => m.status !== 'rejected' && !m.computer);
+  const modules = o.modules.filter((m) => m.status !== 'rejected' && !m.computer && m.channel);
   const screens = o.modules.filter((m) => m.status !== 'rejected' && m.computer && (m.enabled || linked.has(`module:${m.id}`)));
+  const tools = o.modules.filter((m) => m.status !== 'rejected' && !m.computer && !m.channel && (m.enabled || m.status === 'pending' || linked.has(`module:${m.id}`)));
   const usedBuiltins = new Set(o.edges.filter((e) => e.to.startsWith('builtin:') && agentIds.has(e.from)).map((e) => e.to));
   const builtins = o.builtinNodes.filter((b) => usedBuiltins.has(b.id));
-  const skillCount = screens.length + o.skills.length + builtins.length;
+  const skillCount = screens.length + tools.length + o.skills.length + builtins.length;
 
   const hM = columnHeight(modules.length, COLUMN.module.height, COLUMN.module.gap);
   const agents = orderAgents(o.agents);
@@ -106,8 +108,10 @@ export function layoutGraph(o: Overview, saved: Record<string, { x: number; y: n
   });
   const skillYs = stack(skillCount, COLUMN.skill.height, COLUMN.skill.gap, (tall - hS) / 2);
   screens.forEach((m, i) => place(`module:${m.id}`, 'screen', m.id, COLUMN.skill, skillYs[i] ?? 0));
-  builtins.forEach((b, i) => place(b.id, 'builtin', b.id, COLUMN.skill, skillYs[screens.length + i] ?? 0));
-  o.skills.forEach((s, i) => place(`skill:${s.id}`, 'skill', s.id, COLUMN.skill, skillYs[screens.length + builtins.length + i] ?? 0));
+  tools.forEach((m, i) => place(`module:${m.id}`, 'tool', m.id, COLUMN.skill, skillYs[screens.length + i] ?? 0));
+  const before = screens.length + tools.length;
+  builtins.forEach((b, i) => place(b.id, 'builtin', b.id, COLUMN.skill, skillYs[before + i] ?? 0));
+  o.skills.forEach((s, i) => place(`skill:${s.id}`, 'skill', s.id, COLUMN.skill, skillYs[before + builtins.length + i] ?? 0));
 
   const ids = new Set(nodes.map((n) => n.id));
   const edges: LayoutEdge[] = [];

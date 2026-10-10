@@ -7,7 +7,7 @@ const overview = (screen: { enabled: boolean; linked: boolean }): Overview =>
     server: { startedAt: 0, now: 0, tz: 'UTC', tokensToday: 0, approvalsPending: 0, envKey: false },
     agents: [{ id: 'a0', delegation: { accept: false, send: false, supervisorId: null } }],
     modules: [
-      { id: 'telegram', status: 'running', computer: false },
+      { id: 'telegram', status: 'running', computer: false, channel: true },
       { id: 'computer', status: 'idle', computer: true, enabled: screen.enabled },
     ],
     skills: [],
