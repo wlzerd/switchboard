@@ -1,6 +1,21 @@
+<div align="center">
+
 # Switchboard
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-22.18%2B-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![Fastify](https://img.shields.io/badge/Fastify-5-000000?logo=fastify&logoColor=white)](https://fastify.dev/)
+[![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)](https://nodejs.org/api/sqlite.html)
+[![Claude API](https://img.shields.io/badge/Claude_API-D97757?logo=claude&logoColor=white)](https://platform.claude.com/docs)
+
+[![License: MIT](https://img.shields.io/github/license/wlzerd/switchboard?color=yellow)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/wlzerd/switchboard)](https://github.com/wlzerd/switchboard/commits/main)
+[![Commit activity](https://img.shields.io/github/commit-activity/m/wlzerd/switchboard)](https://github.com/wlzerd/switchboard/graphs/commit-activity)
+[![Stars](https://img.shields.io/github/stars/wlzerd/switchboard?logo=github)](https://github.com/wlzerd/switchboard/stargazers)
+[![Visitors](https://hits.sh/github.com/wlzerd/switchboard.svg?view=today-total&label=visitors&color=c6f35b)](https://hits.sh/github.com/wlzerd/switchboard/)
+
+</div>
 
 24시간 돌아가는 Claude 에이전트 서버입니다. 에이전트 · 모듈 · 스킬이 어떻게 이어져 있고 지금 무엇을 하는지 카드와 선으로 한눈에 보고,
 권한과 훅으로 안전하게 운영합니다.
