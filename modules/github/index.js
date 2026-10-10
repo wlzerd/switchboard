@@ -1,7 +1,7 @@
 // GitHub 모듈 (받기 전용 채널 + 도구). REST API 를 ctx.fetch 로만 부릅니다 (허용 도메인: api.github.com).
 // 지켜보는 저장소에 새 이슈가 올라오면 '조용한 판단' 메시지(quiet: true)로 연결된 에이전트에게 넘깁니다.
 // 처음 켤 때 이미 있던 이슈는 건너뛰고, 그 뒤로 올라온 이슈만 알립니다.
-// 토큰은 설정 화면에 넣은 fine-grained 개인 액세스 토큰이며, 로그 · 오류 문구에 넣지 않습니다.
+// 토큰은 설정 화면에 넣은 fine-grained 개인 액세스 토큰이나 GitHub 로그인(OAuth 앱)으로 받은 토큰이며, 로그 · 오류 문구에 넣지 않습니다.
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -31,6 +31,7 @@ import {
   repoKey,
   resolveRepo,
   selectNewIssues,
+  tokenKind,
 } from './lib.js';
 
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -124,7 +125,7 @@ async function api(method, pathname, opts = {}) {
   }
   if (!res.ok) {
     const gh = data && typeof data === 'object' && typeof data.message === 'string' ? data.message : '';
-    throw new GitHubError(describeHttpError(res.status, data, res.headers, opts.about ?? {}), res.status, gh, rateLimitUntil(res.status, data, res.headers));
+    throw new GitHubError(describeHttpError(res.status, data, res.headers, { ...(opts.about ?? {}), auth: tokenKind(cfg.token) }), res.status, gh, rateLimitUntil(res.status, data, res.headers));
   }
   return { status: res.status, data, headers: res.headers };
 }
@@ -142,7 +143,13 @@ function setStatus(detail) {
 }
 
 function refreshStatus() {
-  if (authBroken) return setStatus('GitHub 토큰이 맞지 않거나 만료되어 새 이슈를 확인하지 못합니다. 설정 화면에서 토큰을 새로 넣으세요.');
+  if (authBroken) {
+    return setStatus(
+      tokenKind(cfg.token) === 'oauth'
+        ? 'GitHub 로그인이 풀려 새 이슈를 확인하지 못합니다. 설정 화면에서 다시 로그인하세요.'
+        : 'GitHub 토큰이 맞지 않거나 만료되어 새 이슈를 확인하지 못합니다. 설정 화면에서 토큰을 새로 넣으세요.',
+    );
+  }
   if (Date.now() < pausedUntil) return setStatus(`GitHub API 호출 한도를 다 써서 ${new Date(pausedUntil).toLocaleTimeString('sv-SE').slice(0, 5)}까지 새 이슈 확인을 쉽니다.`);
   if (repoProblems.size > 0) return setStatus(`볼 수 없는 저장소: ${[...repoProblems.entries()].map(([r, why]) => `${r} (${why})`).join(' · ')}`);
   return setStatus('');

@@ -357,6 +357,9 @@ export class Store {
       { key, value: JSON.stringify(value), now: Date.now() },
     );
   }
+  deleteSetting(key: string): void {
+    this.db.run('DELETE FROM settings WHERE key = :key', { key });
+  }
 
   /* API 키 */
   private keyRow(r: Row): ApiKeyRow {

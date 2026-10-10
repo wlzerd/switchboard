@@ -19,6 +19,8 @@ export type ServerEvent =
   | { type: 'approval.created'; approval: ApprovalRow }
   | { type: 'approval.resolved'; approval: ApprovalRow }
   | { type: 'module.status'; moduleId: string; status: ModuleStatus; detail: string | null }
+  /** 모듈 로그인(OAuth 기기 로그인)의 진행: 코드를 받음 · 끝남 */
+  | { type: 'module.login'; moduleId: string; state: 'pending' | 'done' | 'expired' | 'denied' | 'failed' | 'cancelled' }
   | { type: 'skill.created'; skillId: string; agentId: string | null }
   | { type: 'graph.changed' }
   | { type: 'theme.changed'; theme: unknown };

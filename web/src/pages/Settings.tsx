@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Icon } from '../components/Icon';
-import { Avatar, ModuleIcon } from '../components/ui';
+import { Avatar, ModuleIcon, Seg } from '../components/ui';
 import { api, errorText } from '../lib/api';
+import { loginBadge, remaining, shortUrl } from '../lib/login';
 import { settingsPatch, sourceBadge, stillMissing } from '../lib/settings';
 import { onServerEvent, refreshOverview, toast } from '../lib/store';
-import type { HookVarView, KeyView, ModuleField, ModuleSettingsView, SettingsResponse } from '../lib/types';
+import type { HookVarView, KeyView, LoginView, ModuleField, ModuleSettingsView, SettingsResponse } from '../lib/types';
 
 /**
  * 설정: .env 와 DB(화면에서 관리)의 구분.
@@ -39,11 +40,11 @@ export function SettingsPage({ focus }: { focus: string | null }) {
     if (loaded && focus) document.getElementById('modules')?.scrollIntoView({ block: 'start' });
   }, [loaded, focus]);
 
-  // 모듈이 다시 시작하거나 상태가 바뀌면 설정 상태(연결됨 · 시작 안 됨)도 다시 읽습니다.
+  // 모듈이 다시 시작하거나 상태가 바뀌면 설정 상태(연결됨 · 시작 안 됨)도 다시 읽습니다. 로그인이 끝났을 때도.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const off = onServerEvent((e) => {
-      if (e.type !== 'module.status' && e.type !== 'graph.changed') return;
+      if (e.type !== 'module.status' && e.type !== 'graph.changed' && e.type !== 'module.login') return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(reload, 300);
     });
@@ -440,6 +441,7 @@ function ModuleForm({ m, onChanged }: { m: ModuleSettingsView; onChanged: () => 
           </span>
         ) : null}
       </div>
+      {m.login ? <LoginPanel moduleId={m.id} login={m.login} onChanged={onChanged} onLogout={() => void save({ [m.login?.tokenEnv ?? '']: null }, 'logout')} loggingOut={busy === 'logout'} /> : null}
       <ul className="set-fields">
         {m.fields.map((f) => (
           <FieldRow
@@ -476,6 +478,106 @@ function ModuleForm({ m, onChanged }: { m: ModuleSettingsView; onChanged: () => 
           {m.enabled ? '저장하고 다시 시작' : '저장'}
         </button>
       </div>
+    </div>
+  );
+}
+
+/** 비밀값을 붙여 넣는 대신 로그인(OAuth 기기 로그인)으로 받기: 코드를 보여 주고, 허락하면 서버가 토큰을 넣습니다. */
+function LoginPanel({ moduleId, login, onChanged, onLogout, loggingOut }: { moduleId: string; login: LoginView; onChanged: () => void; onLogout: () => void; loggingOut: boolean }) {
+  const first = login.scopes[0]?.value ?? '';
+  const [scope, setScope] = useState(login.current && login.scopes.some((x) => x.value === login.current?.scope) ? login.current.scope : first);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const pending = login.pending;
+
+  // 기다리는 동안 남은 시간을 1초마다 다시 그립니다.
+  useEffect(() => {
+    if (!pending) return undefined;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [pending]);
+
+  const call = async (method: 'POST' | 'DELETE'): Promise<void> => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api(`/api/modules/${moduleId}/login`, method === 'POST' ? { body: { scope } } : { method: 'DELETE' });
+      onChanged();
+    } catch (err) {
+      setProblem(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async (code: string): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(code);
+      toast('코드를 복사했습니다', 'ok');
+    } catch {
+      toast('복사하지 못했습니다. 코드를 직접 입력하세요', 'error');
+    }
+  };
+
+  const badge = loginBadge(login);
+  const failure = problem ?? (login.last && login.last.state !== 'cancelled' ? login.last.message : null);
+  return (
+    <div className="login-panel">
+      <div className="login-row">
+        <span className="login-title">
+          <Icon name="key" size={15} stroke={2.2} />
+          {login.label}
+        </span>
+        <span className={`chip ${badge.tone}`}>{badge.text}</span>
+      </div>
+      {pending ? (
+        <div className="login-row">
+          <span className="login-code mono" aria-label="로그인 코드">
+            {pending.userCode}
+          </span>
+          <button type="button" className="btn xs" onClick={() => void copy(pending.userCode)}>
+            <Icon name="copy" size={13} stroke={2.2} />
+            복사
+          </button>
+          <a className="btn sm primary" href={pending.verificationUri} target="_blank" rel="noopener noreferrer">
+            <Icon name="link" size={14} stroke={2.2} />
+            {shortUrl(pending.verificationUri)}
+          </a>
+          <span className="muted mono" style={{ fontSize: 12.5 }} aria-label="남은 시간">
+            {remaining(pending.expiresAt, now)}
+          </span>
+          <button type="button" className="btn xs" style={{ marginLeft: 'auto' }} disabled={busy} onClick={() => void call('DELETE')}>
+            취소
+          </button>
+        </div>
+      ) : (
+        <div className="login-row">
+          {login.scopes.length > 1 ? <Seg value={scope} options={login.scopes.map((x) => ({ value: x.value, label: x.label }))} onChange={setScope} label="로그인 권한 범위" /> : null}
+          <button type="button" className="btn sm primary" disabled={!login.ready || busy} onClick={() => void call('POST')}>
+            {busy ? <span className="spinner" style={{ width: 13, height: 13 }} /> : <Icon name="key" size={14} stroke={2.2} />}
+            {login.current ? '다시 로그인' : login.label}
+          </button>
+          {!login.ready ? <span className="chip warn mono">{login.clientIdEnv} 필요</span> : null}
+          {login.current ? (
+            <button type="button" className="btn sm danger" disabled={loggingOut} onClick={onLogout}>
+              로그아웃
+            </button>
+          ) : null}
+          {login.current && login.manageUrl ? (
+            <a className="set-link" href={login.manageUrl} target="_blank" rel="noopener noreferrer">
+              <Icon name="link" size={12} stroke={2.2} />
+              앱 권한 관리
+            </a>
+          ) : null}
+        </div>
+      )}
+      {failure ? (
+        <span role="alert" className="err">
+          {failure}
+        </span>
+      ) : null}
     </div>
   );
 }

@@ -12,11 +12,13 @@ import type { ChildMessage, ImagePayload, InboundMessage, ParentMessage } from '
  * 설정이 비었거나 풀 수 없어 시작하지 못했을 때 에이전트 · 사용자에게 줄 길잡이:
  * 설정 화면 주소와, module.json 에 적힌 값 만드는 곳(토큰 발급 페이지 등).
  */
-export function setupGuide(config: Pick<Config, 'publicUrl' | 'host' | 'port'>, manifest: Pick<Manifest, 'id' | 'env'>, names: readonly string[]): string {
+export function setupGuide(config: Pick<Config, 'publicUrl' | 'host' | 'port'>, manifest: Pick<Manifest, 'id' | 'env'> & Partial<Pick<Manifest, 'login'>>, names: readonly string[]): string {
   const parts = [`설정 화면: ${appLink(config, `/settings/${manifest.id}`)}`];
   for (const n of names) {
     const e = manifest.env.find((x) => x.name === n);
     if (e?.url) parts.push(`${e.label ?? e.name} 만드는 곳: ${e.url}`);
+    // 붙여 넣는 대신 로그인으로 받을 수 있는 값이면 함께 알립니다.
+    if (manifest.login && manifest.login.tokenEnv === n) parts.push(`또는 설정 화면의 '${manifest.login.label}'(으)로 받기`);
   }
   return ` (${parts.join(' · ')})`;
 }

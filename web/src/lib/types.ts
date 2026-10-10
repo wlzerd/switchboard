@@ -182,6 +182,26 @@ export interface ModuleField {
   url: string | null;
 }
 
+export type LoginOutcome = 'expired' | 'denied' | 'failed' | 'cancelled';
+
+/** 모듈 로그인 (OAuth 기기 로그인): 받은 토큰은 tokenEnv 설정에 들어갑니다 */
+export interface LoginView {
+  label: string;
+  scopes: { value: string; label: string }[];
+  clientIdEnv: string;
+  tokenEnv: string;
+  /** Client ID 가 있어 로그인할 수 있는지 */
+  ready: boolean;
+  /** 이 앱의 권한을 거둘 수 있는 페이지 */
+  manageUrl: string | null;
+  /** 지금 토큰이 로그인으로 받은 것일 때 */
+  current: { account: string | null; scope: string; at: number } | null;
+  /** 사용자가 허락하기를 기다리는 중 */
+  pending: { userCode: string; verificationUri: string; expiresAt: number; scope: string } | null;
+  /** 마지막으로 끝난 시도 */
+  last: { state: LoginOutcome; message: string; at: number } | null;
+}
+
 export interface ModuleSettingsView {
   id: string;
   name: string;
@@ -193,6 +213,7 @@ export interface ModuleSettingsView {
   computer: boolean;
   fields: ModuleField[];
   missing: string[];
+  login: LoginView | null;
 }
 
 export interface KeyView {
@@ -478,6 +499,7 @@ export type ServerEvent =
   | { type: 'approval.created'; approval: ApprovalView }
   | { type: 'approval.resolved'; approval: ApprovalView }
   | { type: 'module.status'; moduleId: string; status: ModuleStatus; detail: string | null }
+  | { type: 'module.login'; moduleId: string; state: 'pending' | 'done' | LoginOutcome }
   | { type: 'skill.created'; skillId: string; agentId: string | null }
   | { type: 'graph.changed' }
   | { type: 'theme.changed'; theme: Theme };

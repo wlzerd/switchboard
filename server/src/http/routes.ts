@@ -203,6 +203,7 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
       computer: row.manifest.computer !== null,
       fields,
       missing: fields.filter((f) => f.required && (f.source === 'empty' || f.source === 'locked')).map((f) => f.name),
+      login: app.login.view(row),
     };
   };
 
@@ -222,6 +223,7 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     const row = store.getModule(param(req, 'id'));
     const b = readBody(req);
     const changed = app.settings.saveModule(row, b['values']);
+    app.login.tokenChanged(row, changed);
     let restarted = false;
     if (changed.length > 0 && row.enabled && row.status !== 'pending' && row.status !== 'rejected') {
       await registry.restart(row.id).catch(() => {
@@ -233,6 +235,13 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     app.bus.emit({ type: 'graph.changed' });
     return { module: moduleSettingsView(row.id), changed, restarted };
   });
+
+  /** 모듈 로그인 (OAuth 기기 로그인): 시작 { scope } → 화면에 보일 코드 · 취소. 받은 토큰은 모듈 설정에 암호화해 넣습니다. */
+  server.post<IdParams>('/api/modules/:id/login', async (req) => {
+    const b = readBody(req);
+    return { login: await app.login.start(param(req, 'id'), b['scope']) };
+  });
+  server.delete<IdParams>('/api/modules/:id/login', async (req) => ({ login: app.login.cancel(param(req, 'id')) }));
 
   /** .env 에만 있는 값을 DB 로 옮깁니다: { moduleId?, names? } · 둘 다 없으면 모든 모듈과 훅 값 */
   server.post('/api/settings/import-env', async (req) => {
@@ -549,6 +558,7 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
 
   server.delete<IdParams>('/api/modules/:id', async (req) => {
     await registry.remove(param(req, 'id'));
+    app.login.forget(param(req, 'id'));
     return { ok: true };
   });
 

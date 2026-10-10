@@ -1,7 +1,7 @@
 {
   "id": "github",
   "name": "GitHub",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "지켜보는 저장소에 새 이슈가 올라오면 연결된 에이전트가 조용히 판단하게 하고, 이슈 읽기 · 댓글 · 라벨 · 닫기, 파일 읽기, 브랜치 커밋 · PR 만들기 도구를 줍니다.",
   "kind": "module",
   "entry": "index.js",
@@ -19,8 +19,16 @@
       "label": "토큰",
       "required": true,
       "secret": true,
-      "description": "fine-grained 개인 액세스 토큰 (저장소 권한: Issues · Pull requests · Contents 읽기·쓰기)",
+      "description": "fine-grained 개인 액세스 토큰 (저장소 권한: Issues · Pull requests · Contents 읽기·쓰기), 또는 GitHub 로그인으로 받은 토큰",
       "url": "https://github.com/settings/personal-access-tokens/new?name=Switchboard&description=Switchboard%20GitHub%20%EB%AA%A8%EB%93%88&expires_in=90&issues=write&pull_requests=write&contents=write&metadata=read"
+    },
+    {
+      "name": "GITHUB_OAUTH_CLIENT_ID",
+      "label": "OAuth 앱 Client ID",
+      "required": false,
+      "secret": false,
+      "description": "GitHub 로그인에 쓸 OAuth 앱의 Client ID (앱 설정에서 Enable Device Flow 켜기)",
+      "url": "https://github.com/settings/applications/new"
     },
     {
       "name": "GITHUB_REPOS",
@@ -37,9 +45,33 @@
       "description": "새 이슈 확인 간격(분, 기본 5, 1~1440)"
     }
   ],
+  "login": {
+    "kind": "oauth-device",
+    "label": "GitHub 로그인",
+    "deviceCodeUrl": "https://github.com/login/device/code",
+    "tokenUrl": "https://github.com/login/oauth/access_token",
+    "clientIdEnv": "GITHUB_OAUTH_CLIENT_ID",
+    "tokenEnv": "GITHUB_TOKEN",
+    "scopes": [
+      {
+        "value": "repo",
+        "label": "비공개 저장소 포함"
+      },
+      {
+        "value": "public_repo",
+        "label": "공개 저장소만"
+      }
+    ],
+    "account": {
+      "url": "https://api.github.com/user",
+      "field": "login"
+    },
+    "manageUrl": "https://github.com/settings/connections/applications/{clientId}"
+  },
   "permissions": {
     "net": [
-      "api.github.com"
+      "api.github.com",
+      "github.com"
     ],
     "fsWrite": true,
     "childProcess": false

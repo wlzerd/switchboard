@@ -14,6 +14,7 @@ import { ConfigError } from './errors.ts';
 import { HookEngine, type FileHook } from './hooks/engine.ts';
 import { loadFileHooks, type FileHookError } from './hooks/files.ts';
 import type { Logger } from './log.ts';
+import { ModuleLoginService } from './modules/login.ts';
 import { ModuleRegistry } from './modules/registry.ts';
 import { ProjectService } from './projects/service.ts';
 import { SchedulerService } from './scheduler/service.ts';
@@ -34,6 +35,7 @@ export interface App {
   scheduler: SchedulerService;
   manager: AgentManager;
   settings: SettingsService;
+  login: ModuleLoginService;
   projects: ProjectService;
   attachments: AttachmentService;
   presets: Map<string, Preset>;
@@ -126,6 +128,15 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
 
   registry.init();
   manager.init();
+  const login = new ModuleLoginService({
+    store,
+    settings,
+    bus,
+    log: log.child('login'),
+    restart: async (id) => {
+      await registry.restart(id);
+    },
+  });
 
   const full: App = {
     config,
@@ -141,6 +152,7 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
     scheduler,
     manager,
     settings,
+    login,
     projects,
     attachments,
     presets,
