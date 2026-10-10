@@ -533,7 +533,7 @@ function Inspector({ agent, overview, onClose }: { agent: AgentView; overview: O
                 {agent.task.error}
               </span>
             ) : null}
-            <Steps steps={agent.task.steps} />
+            <Steps key={agent.task.id} steps={agent.task.steps} />
           </>
         ) : (
           <span className="muted">아직 작업이 없습니다</span>

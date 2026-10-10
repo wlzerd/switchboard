@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fadeEdges } from '../src/lib/scrollFade';
+import { atBottom, fadeEdges } from '../src/lib/scrollFade';
 
 const box = (o: Partial<{ scrollTop: number; scrollLeft: number; scrollHeight: number; scrollWidth: number; clientHeight: number; clientWidth: number }>) => ({
   scrollTop: 0,
@@ -49,5 +49,17 @@ describe('스크롤 가장자리 흐림', () => {
 
   it('세로 · 가로가 함께 넘치면 둘 다', () => {
     expect(fadeEdges(box({ scrollHeight: 400, scrollWidth: 300, scrollTop: 50, scrollLeft: 50 }))).toBe('t b l r');
+  });
+});
+
+describe('맨 아래에 붙어 있는지 (작업 단계 목록이 새 단계를 따라 내려갈지)', () => {
+  it.each([
+    [{ scrollTop: 274, clientHeight: 226, scrollHeight: 500 }, true],
+    [{ scrollTop: 270, clientHeight: 226, scrollHeight: 500 }, true],
+    [{ scrollTop: 269, clientHeight: 226, scrollHeight: 500 }, false],
+    [{ scrollTop: 0, clientHeight: 226, scrollHeight: 500 }, false],
+    [{ scrollTop: 0, clientHeight: 226, scrollHeight: 226 }, true],
+  ])('%j → %s', (el, want) => {
+    expect(atBottom(el)).toBe(want);
   });
 });

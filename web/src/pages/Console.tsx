@@ -1081,7 +1081,7 @@ function AgentPanel({ agent }: { agent: AgentView }) {
           <>
             <span style={{ fontSize: 14, fontWeight: 600 }}>{task.title}</span>
             <StatusLine status={live ? status : task.status === 'failed' ? 'error' : 'idle'} detail={live ? null : task.status === 'done' ? '완료' : task.status === 'cancelled' ? '취소됨' : task.error} />
-            <Steps steps={task.steps} />
+            <Steps key={task.id} steps={task.steps} />
           </>
         ) : (
           <span className="muted">아직 작업이 없습니다</span>

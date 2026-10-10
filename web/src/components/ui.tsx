@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { hexA } from '../lib/theme';
 import { initial } from '../lib/format';
+import { atBottom } from '../lib/scrollFade';
 import { useApp } from '../lib/store';
 import type { AgentStatus, StepState, TaskStep } from '../lib/types';
 import { Icon } from './Icon';
@@ -55,10 +56,36 @@ export function StepIcon({ state }: { state: StepState }) {
   return <span className="step-ico todo" />;
 }
 
+/** 한 번에 보이는 단계 수. 넘으면 이 높이에서 스크롤합니다 */
+export const STEPS_SHOWN = 5;
+
+/**
+ * 작업 단계. 5개가 넘으면 5개 높이에서 스크롤하고 맨 아래(최근 단계)를 보여 줍니다.
+ * 새 단계가 붙으면 따라 내려가고, 위로 올려 보는 중이면 그 자리에 둡니다.
+ */
 export function Steps({ steps }: { steps: TaskStep[] }) {
   const color: Record<StepState, string> = { done: 'var(--text2)', active: 'var(--text)', wait: 'var(--warn)', todo: 'var(--text3)', error: 'var(--danger)' };
+  const ref = useRef<HTMLOListElement>(null);
+  const stick = useRef(true);
+  const scroll = steps.length > STEPS_SHOWN;
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && scroll && stick.current) el.scrollTop = el.scrollHeight;
+  }, [steps, scroll]);
   return (
-    <ol className="steps">
+    <ol
+      ref={ref}
+      className={`steps${scroll ? ' steps-scroll scroll-fade' : ''}`}
+      tabIndex={scroll ? 0 : undefined}
+      aria-label={scroll ? '작업 단계' : undefined}
+      onScroll={
+        scroll
+          ? (e) => {
+              stick.current = atBottom(e.currentTarget);
+            }
+          : undefined
+      }
+    >
       {steps.map((s) => (
         <li key={s.id}>
           <StepIcon state={s.state} />

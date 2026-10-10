@@ -45,6 +45,11 @@ interface Tracked {
   reverseY: boolean;
 }
 
+/** 스크롤이 맨 아래에 붙어 있는지 (몇 px 모자라도 붙은 것으로 봄) */
+export function atBottom(el: { scrollTop: number; clientHeight: number; scrollHeight: number }): boolean {
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+}
+
 /**
  * root 아래의 대상 요소를 찾아(나중에 생기는 모달 등 포함) 스크롤 · 크기 · 내용이 바뀔 때마다 흐릴 쪽을 다시 정합니다.
  * 계산은 화면을 그리기 직전 한 번으로 모읍니다. 돌려준 함수로 모두 해제합니다.
