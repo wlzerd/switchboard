@@ -1096,9 +1096,14 @@ function AgentPanel({ agent }: { agent: AgentView }) {
           <span className="section-label">허용 폴더</span>
           <div className="chips">
             {agent.folders.map((f) => (
-              <span key={f.path} className={`chip mono${f.mode === 'write' ? ' new' : ''}`} title={MODE_LABEL[f.mode]}>
+              <span key={f.path} className={`chip mono${f.mode === 'write' ? ' new' : ''}`} title={`${f.path} · ${MODE_LABEL[f.mode]}`} style={{ maxWidth: '100%' }}>
                 <Icon name="folder" size={11} stroke={2.2} />
-                {f.path} · {MODE_LABEL[f.mode]}
+                {/* 긴 경로는 앞쪽을 줄여 끝 폴더가 보이게 합니다 (rtl 은 줄이는 쪽만 바꾸고, 글자 순서는 bdi 가 그대로 둠). */}
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', direction: 'rtl' }}>
+                  <bdi dir="ltr">
+                    {f.path} · {MODE_LABEL[f.mode]}
+                  </bdi>
+                </span>
               </span>
             ))}
           </div>
