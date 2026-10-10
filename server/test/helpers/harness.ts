@@ -29,6 +29,11 @@ export interface Harness {
   close(): Promise<void>;
 }
 
+/** 시스템 프롬프트 전체 (고정 부분 + 바뀌는 부분) */
+export function systemText(p: Params): string {
+  return p.system.map((b) => b.text).join('\n\n');
+}
+
 /** 마지막 user 메시지의 글자 (도구 결과면 그 내용) */
 export function lastUserText(p: Params): string {
   const last = [...p.messages].reverse().find((m) => m.role === 'user');

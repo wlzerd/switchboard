@@ -48,6 +48,13 @@ export function percent(used: number, limit: number): number {
   return Math.max(0, Math.min(100, Math.round((used / limit) * 100)));
 }
 
+/** 프롬프트 캐시 적중률(%): 입력 토큰 중 캐시에서 읽은 비율. 입력이 없으면 null */
+export function cacheHitRate(c: { read: number; write: number; uncached: number } | null): number | null {
+  if (!c) return null;
+  const total = c.read + c.write + c.uncached;
+  return total > 0 ? Math.round((c.read / total) * 100) : null;
+}
+
 /** 이름의 첫 글자 (아바타) */
 export function initial(name: string): string {
   return Array.from(name.trim())[0] ?? '?';

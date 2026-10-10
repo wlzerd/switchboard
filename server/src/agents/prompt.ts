@@ -93,10 +93,18 @@ function delegationSection(agent: AgentRow, input: Pick<PromptInput, 'peers' | '
 }
 
 /**
- * 시스템 프롬프트. 시각처럼 매번 바뀌는 값은 넣지 않습니다 (프롬프트 캐시와 thinking 블록 유효성 유지).
- * 현재 시각과 출처는 사용자 메시지 머리에 붙입니다.
+ * 시스템 프롬프트. 프롬프트 캐시는 앞에서부터 바이트가 같은 부분만 다시 읽으므로 두 덩어리로 나눕니다.
+ *  - fixed: 설정을 바꿀 때만 바뀌는 부분 (이름 · 역할 · 작업 방식 · 폴더 · 채널 · 권한 · 금지 조항 · 제작 가이드).
+ *    도구 정의와 함께 같은 에이전트의 모든 대화가 캐시에서 읽습니다.
+ *  - dynamic: 일하면서 바뀌는 부분 (관리 중인 프로젝트 · 위임 대상 · 하트비트 조건). 바뀌어도 도구와 fixed 는 캐시에 남습니다.
+ * 시각처럼 매번 바뀌는 값은 넣지 않습니다 (현재 시각과 출처는 사용자 메시지 머리에 붙임).
  */
-export function buildSystemPrompt(input: PromptInput): string {
+export interface SystemPrompt {
+  fixed: string;
+  dynamic: string;
+}
+
+export function buildSystemPrompt(input: PromptInput): SystemPrompt {
   const { agent, defs, channels, connected } = input;
   const perms = defs
     .map((d) => {
@@ -133,7 +141,7 @@ export function buildSystemPrompt(input: PromptInput): string {
     hb?.enabled ? `- 하트비트: ${hb.everyMinutes}분마다${hb.activeHours ? ` (${hb.activeHours})` : ''} 위 조건을 점검한다.` : '- 하트비트: 꺼짐 (자동 알림을 받을 때만 판단한다)',
   ].join('\n');
 
-  const sections = [
+  const fixed = [
     `너는 '${agent.name}'이라는 이름의 에이전트다. Switchboard 서버에서 24시간 동작하며 사용자의 지시를 처리한다.`,
     agent.role.trim() ? `## 역할\n${agent.role.trim()}` : '',
     [
@@ -146,17 +154,16 @@ export function buildSystemPrompt(input: PromptInput): string {
       '- 반복해서 해야 하는 일은 schedule_create 로 예약할 수 있다.',
     ].join('\n'),
     foldersSection(agent),
-    projectsSection(input.projects ?? []),
     input.screen ? SCREEN_SECTION : '',
     `## 연결된 채널\n${channelLines}`,
     moduleLines.length > 0 ? `## 연결된 모듈·스킬\n${moduleLines.join('\n')}` : '',
     `## 권한\n${perms}`,
     `## 기본 금지 조항 (끌 수 없음)\n${GUARD_DEFS.map((g) => `- ${g.name}`).join('\n')}`,
-    delegationSection(agent, input),
-    quietLines,
     canBuild ? `## 모듈·스킬 제작 가이드\n새 기능이 필요하면 아래 가이드에 따라 스킬(skill_create)이나 모듈(module_create)을 만든다.\n\n${loadModuleGuide(input.rootDir)}` : '',
   ];
-  return sections.filter((s) => s !== '').join('\n\n');
+  const dynamic = [projectsSection(input.projects ?? []), delegationSection(agent, input), quietLines];
+  const join = (parts: string[]): string => parts.filter((s) => s !== '').join('\n\n');
+  return { fixed: join(fixed), dynamic: join(dynamic) };
 }
 
 /** 화면 제어를 쓸 수 있을 때의 규칙 (Anthropic 컴퓨터 사용 안전 권고를 따름) */

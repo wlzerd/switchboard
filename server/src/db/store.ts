@@ -831,6 +831,11 @@ export class Store {
     const r = this.db.get('SELECT input_tokens + output_tokens + cache_read + cache_write AS total FROM usage_daily WHERE agent_id = :agentId AND day = :day', { agentId, day });
     return r ? num(r, 'total') : 0;
   }
+  /** 하루 사용량 자세히 (캐시 적중률 표시용). 기록이 없으면 null */
+  usageDay(agentId: string, day: string): { input: number; output: number; cacheRead: number; cacheWrite: number } | null {
+    const r = this.db.get('SELECT input_tokens, output_tokens, cache_read, cache_write FROM usage_daily WHERE agent_id = :agentId AND day = :day', { agentId, day });
+    return r ? { input: num(r, 'input_tokens'), output: num(r, 'output_tokens'), cacheRead: num(r, 'cache_read'), cacheWrite: num(r, 'cache_write') } : null;
+  }
   usageAll(day: string): number {
     const r = this.db.get('SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read + cache_write), 0) AS total FROM usage_daily WHERE day = :day', { day });
     return r ? num(r, 'total') : 0;

@@ -25,6 +25,9 @@ import { buildSystemPrompt, userHeader } from './prompt.ts';
 import { COMPUTER_TOOLSET } from './screen.ts';
 import { LiveSink, QuietSink, type TaskSink } from './sink.ts';
 
+/** 도구 정의 + 시스템 프롬프트 고정 부분의 캐시 (대화 부분보다 길게 유지: 긴 유지 시간이 앞에 와야 합니다) */
+const SYSTEM_CACHE = { type: 'ephemeral', ttl: '1h' } as const;
+
 export interface TaskInput {
   agentId: string;
   /** 대화 스레드 키: console · <모듈 id>:<대상> · schedule:<id> · heartbeat · delegation:<맡긴 에이전트 id> */
@@ -516,7 +519,7 @@ export class AgentRuntime {
         const level = this.d.serverToolLevel.get(agent.model) ?? 0;
         const { tools, hadServer, hadComputer } = this.buildTools(agent, model, level, quiet);
         const links = store.listAgentModules(agent.id).map((l) => store.findModule(l.moduleId)).filter((m): m is NonNullable<typeof m> => m !== null);
-        const system = buildSystemPrompt({
+        const prompt = buildSystemPrompt({
           agent,
           defs: this.d.defs(),
           channels: links.filter((m) => m.manifest.channel && m.manifest.channel.send !== false && m.enabled),
@@ -528,7 +531,7 @@ export class AgentRuntime {
           screen: hadComputer,
           projects: this.d.projectsFor(agent),
         });
-        const hash = sha256(`${agent.model}\n${system}\n${JSON.stringify(tools)}`);
+        const hash = sha256(`${agent.model}\n${prompt.fixed}\n${prompt.dynamic}\n${JSON.stringify(tools)}`);
         const threadNow = store.getThread(thread.id);
         if (threadNow.frozenHash !== hash) {
           if (threadNow.frozenHash !== null) {
@@ -550,11 +553,16 @@ export class AgentRuntime {
         const params: Record<string, unknown> = {
           model: agent.model,
           max_tokens: clampMaxTokens(config.agentMaxTokens, model),
-          system: [{ type: 'text', text: system }],
+          // 도구 정의와 고정 부분은 같은 에이전트의 모든 대화가 함께 읽도록 따로 캐시합니다 (대화 사이가 길어도 남게 1시간).
+          system: [
+            { type: 'text', text: prompt.fixed, cache_control: SYSTEM_CACHE },
+            { type: 'text', text: prompt.dynamic },
+          ],
           // 첨부는 기록에 참조로만 있고, 보낼 때 최근 것부터 한도 안에서 실제 내용으로 펼칩니다.
           messages: this.d.attachments ? this.d.attachments.expand(history) : history,
           tools,
-          cache_control: { type: 'ephemeral' },
+          // 대화 부분: 마지막 블록에 자동으로 캐시 지점을 둡니다. 유지 시간은 PROMPT_CACHE_TTL (5m · 1h)
+          cache_control: config.promptCacheTtl === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' },
           ...(betas.length > 0 ? { betas } : {}),
           ...(model?.adaptiveThinking ? { thinking: { type: 'adaptive' } } : {}),
           ...(agent.effort && model?.efforts.includes(agent.effort) ? { output_config: { effort: agent.effort } } : {}),

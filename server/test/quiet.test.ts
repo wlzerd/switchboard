@@ -11,6 +11,9 @@ import { createLogger } from '../src/log.ts';
 import { parseManifest } from '../src/modules/manifest.ts';
 import type { PermissionRule } from '../src/permissions/policy.ts';
 
+/** 시스템 프롬프트 전체 (고정 부분 + 바뀌는 부분) */
+const systemText = (p: { system: { text: string }[] }): string => p.system.map((b) => b.text).join('\n\n');
+
 // 조용한 판단(하트비트 · 자동 알림)과 위임을 실제 실행기로 돌려 봅니다. 모델 호출만 각본대로 답하는 가짜로 바꿉니다.
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 
@@ -257,7 +260,7 @@ describe('모듈 자동 알림 (새 메일)', () => {
     await until(() => !app.manager.live(a.id).running.length && app.store.listMessages(app.store.listThreads(a.id)[0]!.id).length === 0, '정리');
 
     const sent = lastUserText(calls.get(a.keyId)![0]!);
-    expect(calls.get(a.keyId)![0]!.system[0]!.text).toContain('결제 · 계약 메일만 알린다');
+    expect(systemText(calls.get(a.keyId)![0]!)).toContain('결제 · 계약 메일만 알린다');
     expect(sent).toContain('[조용히 판단 · 자동 알림]');
     expect(sent).toContain('[새 메일 1통 · 받은편지함]');
     // 수신 알림 · 메시지 펄스 같은 보이는 이벤트가 없습니다.
@@ -341,8 +344,8 @@ describe('허용 폴더', () => {
       expect(fs.existsSync(path.join(D, 'r', 'x.md'))).toBe(false);
       const c = calls.get(a.keyId)!;
       expect(lastUserText(c[2]!)).toContain('읽기만 허용된 폴더');
-      expect(c[0]!.system[0]!.text).toContain(`- ${path.join(D, 'w')} (읽기·쓰기)`);
-      expect(c[0]!.system[0]!.text).toContain(`- ${path.join(D, 'r')} (읽기만)`);
+      expect(systemText(c[0]!)).toContain(`- ${path.join(D, 'w')} (읽기·쓰기)`);
+      expect(systemText(c[0]!)).toContain(`- ${path.join(D, 'r')} (읽기만)`);
     } finally {
       fs.rmSync(D, { recursive: true, force: true });
     }
@@ -433,7 +436,7 @@ export default {
 
     const c = calls.get(a.keyId)!;
     expect(c[0]!.tools).toContainEqual({ type: 'computer_toolset_20260801' });
-    expect(c[0]!.system[0]!.text).toContain('## 화면 제어');
+    expect(systemText(c[0]!)).toContain('## 화면 제어');
     const results = [...c[1]!.messages].reverse().find((m) => m.role === 'user')!.content as Record<string, unknown>[];
     expect(results.map((r) => r['toolset_name'])).toEqual(['computer', 'computer', 'computer']);
     expect((results[0]!['content'] as Record<string, unknown>[])[0]).toMatchObject({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } });

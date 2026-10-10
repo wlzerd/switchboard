@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compactTokens, initial, percent, relTime, uptime } from '../src/lib/format';
+import { cacheHitRate, compactTokens, initial, percent, relTime, uptime } from '../src/lib/format';
 import { COLUMN, layoutGraph, relatedTo } from '../src/lib/graph';
 import { contrast, contrastIssues, readableOn } from '../src/lib/theme';
 import type { Overview } from '../src/lib/types';
@@ -31,6 +31,19 @@ describe('토큰 표시', () => {
     [100_000_000, '100M'],
   ])('%i → %s', (n, want) => {
     expect(compactTokens(n)).toBe(want);
+  });
+});
+
+describe('프롬프트 캐시 적중률', () => {
+  it.each([
+    [null, null],
+    [{ read: 0, write: 0, uncached: 0 }, null],
+    [{ read: 211_373, write: 163_903, uncached: 46 }, 56],
+    [{ read: 430_570, write: 55_326, uncached: 28 }, 89],
+    [{ read: 0, write: 9825, uncached: 4 }, 0],
+    [{ read: 100, write: 0, uncached: 0 }, 100],
+  ])('%j → %j', (c, want) => {
+    expect(cacheHitRate(c)).toBe(want);
   });
 });
 

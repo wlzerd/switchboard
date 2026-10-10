@@ -111,6 +111,12 @@ describe('기타 형식', () => {
     expect(parseConfig({ ...base, DATA_DIR: '/var/sb' }, '/repo').dataDir).toBe('/var/sb');
   });
 
+  it('PROMPT_CACHE_TTL: 5m(기본) 또는 1h', () => {
+    expect(parseConfig(base, '/repo').promptCacheTtl).toBe('5m');
+    expect(parseConfig({ ...base, PROMPT_CACHE_TTL: '1h' }, '/repo').promptCacheTtl).toBe('1h');
+    expect(issues({ PROMPT_CACHE_TTL: '60m' }).join()).toContain("PROMPT_CACHE_TTL: 5m | 1h 중 하나여야 합니다. 현재 값 '60m'");
+  });
+
   it('GUARD_LOOP_REPEAT 하한 2 (1이면 같은 호출을 한 번도 반복 못 함)', () => {
     expect(issues({ GUARD_LOOP_REPEAT: '1' }).join()).toContain('GUARD_LOOP_REPEAT: 2 이상 100 이하');
     expect(issues({ GUARD_LOOP_REPEAT: '2' })).toEqual([]);

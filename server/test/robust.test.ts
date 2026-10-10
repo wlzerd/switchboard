@@ -5,7 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { LimitError } from '../src/errors.ts';
 import { buildServer } from '../src/http/server.ts';
 import { parseManifest } from '../src/modules/manifest.ts';
-import { lastUserText, startHarness, until, type Harness } from './helpers/harness.ts';
+import { lastUserText, startHarness, systemText, until, type Harness } from './helpers/harness.ts';
 
 // 무한 반복 · 쌓임을 고친 동작을 실제 실행기로 확인합니다. 모델 호출만 각본대로 답하는 가짜입니다.
 let h: Harness;
@@ -150,8 +150,8 @@ describe('관리 중인 프로젝트 (도구 · 프롬프트 · 하트비트)', 
     expect(p).toMatchObject({ name: 'shop', note: '주문 API 리팩터링', watch: true, origin: 'instruction', auto: false });
     expect(p!.originDetail).toContain('웹 콘솔');
     const second = h.calls.get(a.keyId)![1]!;
-    expect(second.system[0]!.text).toContain('## 관리 중인 프로젝트');
-    expect(second.system[0]!.text).toContain(`- shop: ${path.join(ws, 'shop')} — 주문 API 리팩터링 (하트비트 점검)`);
+    expect(systemText(second)).toContain('## 관리 중인 프로젝트');
+    expect(systemText(second)).toContain(`- shop: ${path.join(ws, 'shop')} — 주문 API 리팩터링 (하트비트 점검)`);
 
     h.app.manager.setAutonomy(a.id, { enabled: true, everyMinutes: 30, activeHours: null, checklist: '테스트가 깨지면 알림' }, null);
     h.app.manager.runHeartbeat(a.id, true);

@@ -30,6 +30,8 @@ export interface Config {
   refusalFallback: 'default' | 'off';
   agentMaxTokens: number;
   compaction: 'auto' | 'off';
+  /** 프롬프트 캐시에서 대화 부분을 유지하는 시간 (도구 · 시스템 프롬프트 고정 부분은 늘 1시간) */
+  promptCacheTtl: '5m' | '1h';
 
   agentMaxConcurrency: number;
   approvalTimeoutMinutes: number;
@@ -226,6 +228,7 @@ export function parseConfig(env: Env, rootDir: string): Config {
     refusalFallback: r.oneOf('ANTHROPIC_REFUSAL_FALLBACK', 'default', ['default', 'off'] as const),
     agentMaxTokens: r.int('AGENT_MAX_TOKENS', 64000, 256, 128000),
     compaction: r.oneOf('AGENT_COMPACTION', 'auto', ['auto', 'off'] as const),
+    promptCacheTtl: r.oneOf('PROMPT_CACHE_TTL', '5m', ['5m', '1h'] as const),
 
     agentMaxConcurrency: r.int('AGENT_MAX_CONCURRENCY', 4, 1, 64),
     approvalTimeoutMinutes: r.int('APPROVAL_TIMEOUT_MINUTES', 30, 1, 10080),

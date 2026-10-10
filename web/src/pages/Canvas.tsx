@@ -21,7 +21,7 @@ import { Avatar, ModuleIcon, Seg, StatusLine, Steps } from '../components/ui';
 import { api, errorText } from '../lib/api';
 import { delegationChips, intervalLabel } from '../lib/autonomy';
 import { MODE_LABEL } from '../lib/folders';
-import { clock, compactTokens, percent, relTime } from '../lib/format';
+import { cacheHitRate, clock, compactTokens, percent, relTime } from '../lib/format';
 import { tokenLimitText } from '../lib/limits';
 import { arcPath, layoutGraph, relatedTo, type LayoutEdge } from '../lib/graph';
 import { navigate } from '../lib/router';
@@ -490,6 +490,8 @@ function Inspector({ agent, overview, onClose }: { agent: AgentView; overview: O
   const creating = overview.edges.filter((e) => e.from === agent.id && e.kind === 'creating');
   const unlimited = agent.tokenLimit === 0;
   const used = percent(agent.tokensToday, agent.tokenLimit);
+  const cache = agent.cacheToday;
+  const hit = cacheHitRate(cache);
   const nameOf = (id: string): string => overview.agents.find((a) => a.id === id)?.name ?? '삭제된 에이전트';
   const handing = overview.edges.filter((e) => e.kind === 'delegating' && (e.from === agent.id || e.to === agent.id));
   const hb = agent.heartbeat;
@@ -657,6 +659,14 @@ function Inspector({ agent, overview, onClose }: { agent: AgentView; overview: O
           <span className="progress" style={{ height: 6 }}>
             <span style={{ width: `${used}%`, background: used >= 90 ? 'var(--danger)' : 'var(--msg)' }} />
           </span>
+        ) : null}
+        {cache && hit !== null ? (
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }} title={`캐시 읽기 ${compactTokens(cache.read)} · 쓰기 ${compactTokens(cache.write)} · 캐시 밖 ${compactTokens(cache.uncached)}`}>
+            <span className="dim">캐시 적중</span>
+            <span className="mono" style={{ color: hit < 50 ? 'var(--warn)' : undefined }}>
+              {hit}%
+            </span>
+          </div>
         ) : null}
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>

@@ -70,7 +70,7 @@ export interface EnvItemView {
   isNew: boolean;
 }
 
-const NEW_ENV = new Set(['AGENT_QUEUE_MAX', 'DELEGATION_MAX_ROUNDS', 'ACTIVITY_KEEP', 'ATTACHMENT_MAX_MB', 'ATTACHMENTS_PER_MESSAGE']);
+const NEW_ENV = new Set(['AGENT_QUEUE_MAX', 'DELEGATION_MAX_ROUNDS', 'ACTIVITY_KEEP', 'ATTACHMENT_MAX_MB', 'ATTACHMENTS_PER_MESSAGE', 'PROMPT_CACHE_TTL']);
 
 export interface SettingsDeps {
   config: Config;
@@ -349,6 +349,7 @@ export class SettingsService {
           val('ANTHROPIC_REFUSAL_FALLBACK', c.refusalFallback),
           val('AGENT_MAX_TOKENS', c.agentMaxTokens),
           val('AGENT_COMPACTION', c.compaction),
+          val('PROMPT_CACHE_TTL', c.promptCacheTtl),
           val('MODELS_TIMEOUT_MS', c.modelsTimeoutMs),
           val('MODELS_CACHE_MINUTES', c.modelsCacheMinutes),
         ],

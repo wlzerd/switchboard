@@ -60,6 +60,12 @@ export interface AgentLimits {
   messagesPerMinute: number;
 }
 
+export interface CacheUsage {
+  read: number;
+  write: number;
+  uncached: number;
+}
+
 /** 한도 한 항목의 입력 규칙 (서버 LIMIT_RULES) */
 export interface LimitRule {
   label: string;
@@ -91,6 +97,8 @@ export interface AgentView {
   task: TaskView | null;
   tokensToday: number;
   tokenLimit: number;
+  /** 오늘 프롬프트 캐시: 읽기 · 쓰기 · 캐시 밖 입력 (사용 기록이 없으면 null) */
+  cacheToday: CacheUsage | null;
   limits: AgentLimits;
   links: { moduleId: string; targets: string[]; trigger: 'direct' | 'all' | 'none' }[];
   delegation: DelegationSettings;

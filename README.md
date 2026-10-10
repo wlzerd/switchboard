@@ -156,7 +156,7 @@ sudo systemctl enable --now switchboard
 | 서버 | `HOST` `PORT` `PUBLIC_URL` `TRUST_PROXY` `TZ` `LOG_LEVEL` |
 | 로그인 | `ADMIN_PASSWORD` `SESSION_SECRET` `SESSION_TTL_HOURS` `LOGIN_MAX_ATTEMPTS` `LOGIN_LOCK_MINUTES` |
 | 저장소 | `DATA_DIR` `SECRETS_KEY` |
-| Anthropic | `ANTHROPIC_API_KEY`(선택) `ANTHROPIC_BASE_URL` `AGENT_MAX_TOKENS` `AGENT_COMPACTION` `ANTHROPIC_REFUSAL_FALLBACK` |
+| Anthropic | `ANTHROPIC_API_KEY`(선택) `ANTHROPIC_BASE_URL` `AGENT_MAX_TOKENS` `AGENT_COMPACTION` `ANTHROPIC_REFUSAL_FALLBACK` `PROMPT_CACHE_TTL` |
 | 실행 | `AGENT_MAX_CONCURRENCY` `AGENT_QUEUE_MAX` `APPROVAL_TIMEOUT_MINUTES` `SHELL_TIMEOUT_MS` `HTTP_TOOL_TIMEOUT_MS` `ACTIVITY_KEEP` `ATTACHMENT_MAX_MB` `ATTACHMENTS_PER_MESSAGE` |
 | 스스로 일하기 | `HEARTBEAT_MIN_MINUTES` `DELEGATION_MAX_DEPTH` `DELEGATION_MAX_ROUNDS` |
 | 모듈 | `MODULE_SANDBOX` `MODULE_CALL_TIMEOUT_MS` `MODULE_IDLE_TIMEOUT_MS` `GIT_BIN` |
@@ -189,6 +189,9 @@ scripts/    개발 실행 · 라이선스 점검
   대기열은 `AGENT_QUEUE_MAX` 까지만 쌓입니다. 넘치면 새 작업을 받지 않고 이유를 알리며, 채널 메시지는 활동 기록에 남기고 버립니다.
   예약 실행은 일시정지 중이거나 이전 실행이 아직 끝나지 않았으면 쌓지 않고 건너뛴 횟수만 셉니다.
 - 모델 기능(노력 수준, 적응형 사고, 서버 측 요약, 웹 검색)은 모델 목록 API 가 알려 주는 대로 켭니다.
+- 프롬프트 캐시: 도구 정의와 시스템 프롬프트의 고정 부분(역할 · 권한 · 제작 가이드 등)은 1시간 캐시해 같은 에이전트의 모든 대화
+  (콘솔 · 채널 · 위임 · 하트비트)가 함께 읽습니다. 관리 중인 프로젝트 · 위임 대상 · 하트비트 조건처럼 일하면서 바뀌는 부분은 그 뒤에 두어,
+  바뀌어도 앞부분은 캐시에서 읽습니다. 대화 부분은 `PROMPT_CACHE_TTL`(기본 5분) 동안 캐시하고, 캔버스 패널에 오늘의 캐시 적중률이 보입니다.
 - 대화 기록과 작업 단계는 `DATA_DIR` 의 SQLite 에 저장되어 서버를 다시 켜도 남습니다.
 
 ## 안전 장치

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { appLink } from '../src/config/env.ts';
 import { parseManifest } from '../src/modules/manifest.ts';
 import { setupGuide } from '../src/modules/host.ts';
-import { lastUserText, startHarness, until, type Harness } from './helpers/harness.ts';
+import { lastUserText, startHarness, systemText, until, type Harness } from './helpers/harness.ts';
 
 // 이슈 관리 에이전트(A)가 코드 일을 코드 담당(B)에게 넘기는 흐름과, 모듈 설정이 비었을 때의 '설정 필요' 안내.
 let h: Harness;
@@ -27,7 +27,7 @@ describe('역할 기준 위임', () => {
     h.scripts.set(a.keyId, () => ({ text: '확인했습니다' }));
     const task = h.app.manager.enqueue({ agentId: a.id, source: 'console', sourceLabel: '웹 콘솔', origin: 'console', text: '안녕', reply: null });
     await until(() => h.app.store.getTask(task.id).status === 'done', '작업 끝');
-    const system = h.calls.get(a.keyId)![0]!.system[0]!.text;
+    const system = systemText(h.calls.get(a.keyId)![0]!);
     expect(system).toContain('- 코딩이: 코드 작성 및 유지보수\n');
     expect(system).toContain('- 위 목록에 그 일을 역할로 맡은 에이전트가 있으면 직접 하지 말고 delegate_task 로 그 에이전트에게 맡긴다. 네 역할에 맞는 일은 직접 한다.');
     expect(system).toContain('- 서로 다른 일이 여러 건이면 건마다 따로 맡긴다.');
@@ -135,7 +135,7 @@ describe('협조 에이전트(우선 후보)와 할 수 있는 에이전트 찾�
     const calls = h2.calls.get(a.keyId)!;
 
     // 1) 위임 목록: 역할 + 할 수 있는 일, 협조 에이전트 표시와 우선 규칙. 위임을 받지 않는 에이전트는 없음.
-    const system = calls[0]!.system[0]!.text;
+    const system = systemText(calls[0]!);
     expect(system).toMatch(/- 개발이: 코드 작성 및 유지보수\n {2}할 수 있음: [^\n]*셸 명령 허용/);
     expect(system).toMatch(/- 협조가 \(협조 에이전트 · 우선 후보\): 메일 정리\n {2}할 수 있음: [^\n]* · 못 함: [^\n]*셸 명령/);
     expect(system).toContain("맡을 수 있는 에이전트가 여럿이면 협조 에이전트 '협조가'을(를) 먼저 고른다.");

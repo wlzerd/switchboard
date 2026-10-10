@@ -80,6 +80,11 @@ export function buildOverview(app: App) {
       task: current ? { id: current.id, title: current.title, status: current.status, steps: current.steps, error: current.error, origin: current.origin, finishedAt: current.finishedAt } : null,
       tokensToday: app.store.usageTotal(a.id, day),
       tokenLimit: a.limits.tokensPerDay,
+      /** 오늘 프롬프트 캐시: 읽기 · 쓰기 · 캐시 밖 입력 (적중률 = 읽기 / 합계) */
+      cacheToday: (() => {
+        const u = app.store.usageDay(a.id, day);
+        return u ? { read: u.cacheRead, write: u.cacheWrite, uncached: u.input } : null;
+      })(),
       limits: a.limits,
       links: links.filter((l) => l.agentId === a.id).map((l) => ({ moduleId: l.moduleId, targets: l.config.targets ?? [], trigger: l.config.trigger ?? 'direct' })),
       delegation: a.delegation,
