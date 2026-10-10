@@ -174,7 +174,7 @@ sudo systemctl enable --now switchboard
 | Anthropic | `ANTHROPIC_API_KEY`(선택) `ANTHROPIC_BASE_URL` `AGENT_MAX_TOKENS` `AGENT_COMPACTION` `ANTHROPIC_REFUSAL_FALLBACK` `PROMPT_CACHE_TTL` |
 | 실행 | `AGENT_MAX_CONCURRENCY` `AGENT_QUEUE_MAX` `APPROVAL_TIMEOUT_MINUTES` `SHELL_TIMEOUT_MS` `HTTP_TOOL_TIMEOUT_MS` `ACTIVITY_KEEP` `ATTACHMENT_MAX_MB` `ATTACHMENTS_PER_MESSAGE` |
 | 스스로 일하기 | `HEARTBEAT_MIN_MINUTES` `DELEGATION_MAX_DEPTH` `DELEGATION_MAX_ROUNDS` |
-| 모듈 | `MODULE_SANDBOX` `MODULE_CALL_TIMEOUT_MS` `MODULE_IDLE_TIMEOUT_MS` `GIT_BIN` |
+| 모듈 | `MODULE_SANDBOX` `MODULE_CALL_TIMEOUT_MS` `MODULE_IDLE_TIMEOUT_MS` `GIT_BIN` `MODULE_NPM_REGISTRY` |
 | 기본 금지 조항 | `GUARD_FLOOD_PER_MINUTE` `GUARD_LOOP_REPEAT` |
 
 권한 프리셋은 `config/presets.json`, 기본 금지 조항의 목록(금융 API 도메인, 비밀 파일 이름 등)은 `config/guards.json`,
@@ -258,6 +258,8 @@ export default {
 - 모듈의 `fetch` 는 선언한 도메인만 접속됩니다. `net` · `tls` 같은 저수준 소켓은 Node 권한 모델이 막지 않으므로 정적 검사에서 경고로 보여 줍니다
   (기본 이메일 모듈은 IMAP 서버 주소를 설정으로 정하므로 "모든 주소"를 선언합니다). 서버 쪽 HTTP 도구는 사설 IP 와 리다이렉트를 다시 검사합니다.
 - 설치 전에 정적 검사(eval, new Function, 선언하지 않은 child_process), 라이선스, 의존성 라이선스, 도구 이름 충돌을 점검합니다.
+  Git · zip 모듈의 외부 패키지는 다른 점검을 모두 통과했을 때만 마지막에 받습니다. 이때 npm 에는 서버의 비밀값(.env)을 넘기지 않고,
+  모듈에 딸린 `.npmrc` 같은 설정 파일은 지우며, `MODULE_NPM_REGISTRY`(기본 공식 npm 레지스트리)에서만 받습니다 (설치 스크립트는 돌리지 않음).
 
 **허용 폴더의 한계** — 허용 폴더는 사용자가 권한 · 훅 화면에서만 정하고, 에이전트에게는 바꾸는 도구가 없습니다.
 홈 폴더 전체 · 디스크 전체 · 운영체제 폴더 · Switchboard 설치 폴더와 데이터 폴더 · 비밀 폴더(.ssh 등) · macOS 키체인은 허용할 수 없습니다.

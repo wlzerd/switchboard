@@ -70,7 +70,7 @@ export interface EnvItemView {
   isNew: boolean;
 }
 
-const NEW_ENV = new Set(['AGENT_QUEUE_MAX', 'DELEGATION_MAX_ROUNDS', 'ACTIVITY_KEEP', 'ATTACHMENT_MAX_MB', 'ATTACHMENTS_PER_MESSAGE', 'PROMPT_CACHE_TTL']);
+const NEW_ENV = new Set(['AGENT_QUEUE_MAX', 'DELEGATION_MAX_ROUNDS', 'ACTIVITY_KEEP', 'ATTACHMENT_MAX_MB', 'ATTACHMENTS_PER_MESSAGE', 'PROMPT_CACHE_TTL', 'MODULE_NPM_REGISTRY']);
 
 export interface SettingsDeps {
   config: Config;
@@ -376,6 +376,7 @@ export class SettingsService {
           val('MODULE_RESTART_MAX', c.moduleRestartMax),
           val('MODULE_RESTART_WINDOW_MINUTES', c.moduleRestartWindowMinutes),
           val('GIT_BIN', c.gitBin),
+          val('MODULE_NPM_REGISTRY', c.moduleNpmRegistry),
         ],
       },
     ];

@@ -49,6 +49,8 @@ export interface Config {
   moduleRestartWindowMinutes: number;
   moduleSandbox: 'permission' | 'none';
   gitBin: string;
+  /** Git · zip 모듈의 외부 패키지를 받을 npm 레지스트리 (모듈에 딸린 .npmrc 는 쓰지 않음) */
+  moduleNpmRegistry: string;
 
   guardFloodPerMinute: number;
   guardLoopRepeat: number;
@@ -246,6 +248,7 @@ export function parseConfig(env: Env, rootDir: string): Config {
     moduleRestartWindowMinutes: r.int('MODULE_RESTART_WINDOW_MINUTES', 10, 1, 1440),
     moduleSandbox: r.oneOf('MODULE_SANDBOX', 'permission', ['permission', 'none'] as const),
     gitBin: r.str('GIT_BIN', 'git'),
+    moduleNpmRegistry: r.url('MODULE_NPM_REGISTRY') ?? 'https://registry.npmjs.org',
 
     guardFloodPerMinute: r.int('GUARD_FLOOD_PER_MINUTE', 20, 1, 1000),
     guardLoopRepeat: r.int('GUARD_LOOP_REPEAT', 5, 2, 100),

@@ -65,13 +65,41 @@ function licenseLabel(c: LicenseClass): string {
   return { permissive: '허용형', 'weak-copyleft': '약한 카피레프트', copyleft: '카피레프트', proprietary: '비공개', unknown: '확인 불가' }[c];
 }
 
-function runNpmInstall(dir: string, timeoutMs: number): Promise<void> {
-  const bin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  return new Promise((resolve, reject) => {
+/** 모듈이 함께 보낸 패키지 관리자 설정: 레지스트리와 인증 토큰(${환경 변수} 포함)을 바꿀 수 있어 쓰지 않고 지웁니다. */
+export const PACKAGE_CONFIG_FILES = ['.npmrc', '.yarnrc', '.yarnrc.yml'] as const;
+
+/** npm 에 그대로 넘길 환경 변수: 프로그램 찾기 · 언어 · 프록시 · 인증서만. 서버의 비밀값(.env)은 넘기지 않습니다. */
+const NPM_PASS_ENV = ['PATH', 'LANG', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'NODE_EXTRA_CA_CERTS'] as const;
+
+/**
+ * 모듈 의존성을 받을 npm 호출. 홈 · 캐시 · 사용자 설정은 이 점검만의 빈 폴더(home)를 써서
+ * 서버 계정의 ~/.npmrc(개인 토큰)도 읽지 않고, 레지스트리는 지정한 곳만 씁니다. 설치 스크립트는 돌리지 않습니다.
+ */
+export function npmInvocation(home: string, registry: string): { bin: string; args: string[]; env: Record<string, string> } {
+  const env: Record<string, string> = {};
+  for (const k of NPM_PASS_ENV) {
+    const v = process.env[k];
+    if (v !== undefined && v !== '') env[k] = v;
+  }
+  Object.assign(env, { HOME: home, TMPDIR: home, npm_config_cache: path.join(home, 'cache'), npm_config_update_notifier: 'false' });
+  return {
+    bin: process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    args: ['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--no-package-lock', `--registry=${registry}`, `--userconfig=${path.join(home, '.npmrc')}`],
+    env,
+  };
+}
+
+function runNpmInstall(dir: string, timeoutMs: number, config: Pick<Config, 'dataDir' | 'moduleNpmRegistry'>): Promise<void> {
+  const tmpRoot = path.join(config.dataDir, 'tmp');
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  const home = fs.mkdtempSync(path.join(tmpRoot, 'npm-'));
+  fs.writeFileSync(path.join(home, '.npmrc'), '');
+  const { bin, args, env } = npmInvocation(home, config.moduleNpmRegistry);
+  return new Promise<void>((resolve, reject) => {
     execFile(
       bin,
-      ['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--no-package-lock'],
-      { cwd: dir, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
+      args,
+      { cwd: dir, env, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
       (err, _stdout, stderr) => {
         if (!err) return resolve();
         const e = err as NodeJS.ErrnoException & { killed?: boolean };
@@ -81,7 +109,7 @@ function runNpmInstall(dir: string, timeoutMs: number): Promise<void> {
         reject(new ModuleError('npm_failed', `의존성 설치 실패: ${last || e.message}`, 502));
       },
     );
-  });
+  }).finally(() => fs.rmSync(home, { recursive: true, force: true }));
 }
 
 /**
@@ -122,40 +150,6 @@ export async function buildReport(
     checks.push({ label: '라이선스', level: 'warn', detail: `${manifest.license}(${licenseLabel(declared)}) — ${what}` });
   }
 
-  // 의존성
-  const pkgPath = path.join(dir, 'package.json');
-  let deps: string[] = [];
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { dependencies?: Record<string, string> };
-      deps = Object.keys(pkg.dependencies ?? {});
-    } catch {
-      checks.push({ label: '의존성', level: 'error', detail: 'package.json 이 JSON 형식이 아닙니다.' });
-    }
-  }
-  if (deps.length === 0) {
-    checks.push({ label: '의존성 라이선스', level: 'ok', detail: '외부 패키지 없음' });
-  } else if (!opts.allowDependencies) {
-    checks.push({ label: '의존성 라이선스', level: 'error', detail: `에이전트가 만든 모듈은 외부 패키지를 쓸 수 없습니다 (${deps.slice(0, 3).join(', ')}${deps.length > 3 ? ' 외' : ''}). Node 내장 모듈과 ctx.fetch 만 쓰세요.` });
-  } else {
-    try {
-      await runNpmInstall(dir, ctx.config.moduleCallTimeoutMs * 4);
-      const found = scanNodeModules(dir);
-      const counts = new Map<string, number>();
-      for (const d of found) counts.set(d.license ?? '없음', (counts.get(d.license ?? '없음') ?? 0) + 1);
-      const summary = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([l, n]) => `${l} ${n}`).join(' · ');
-      const risky = found.filter((d) => d.cls === 'copyleft' || d.cls === 'unknown' || d.cls === 'proprietary');
-      if (risky.length > 0) {
-        const r = risky[0] as (typeof risky)[number];
-        checks.push({ label: '의존성 라이선스', level: 'warn', detail: `${found.length}개 중 ${summary} — ${r.name}@${r.version}(${r.license ?? '표기 없음'}, ${licenseLabel(r.cls)})${risky.length > 1 ? ` 외 ${risky.length - 1}개` : ''} 확인 필요` });
-      } else {
-        checks.push({ label: '의존성 라이선스', level: 'ok', detail: `${found.length}개 모두 허용형 · ${summary}` });
-      }
-    } catch (err) {
-      checks.push({ label: '의존성 라이선스', level: 'error', detail: (err as Error).message });
-    }
-  }
-
   checks.push({ label: '출처 고정', level: 'ok', detail: commit ? `${sourceLabel} @ ${commit.slice(0, 7)}` : sourceLabel });
 
   // 권한
@@ -194,6 +188,50 @@ export async function buildReport(
   if (existing && existing.origin !== origin) {
     checks.push({ label: '모듈 id', level: 'error', detail: `id '${manifest.id}'은(는) 이미 다른 방식(${existing.origin})으로 설치된 모듈이 쓰고 있습니다.` });
   }
+
+  // 패키지 관리자 설정 파일은 쓰지 않습니다 (레지스트리를 바꾸거나 환경 변수 값을 실어 보낼 수 있음).
+  const configFiles = PACKAGE_CONFIG_FILES.filter((f) => fs.existsSync(path.join(dir, f)));
+  if (configFiles.length > 0) {
+    for (const f of configFiles) fs.rmSync(path.join(dir, f), { force: true });
+    checks.push({ label: '패키지 설정 파일', level: 'warn', detail: `${configFiles.join(', ')} 을(를) 지웠습니다. 레지스트리나 인증 정보를 바꿀 수 있는 파일이라 쓰지 않고, 외부 패키지는 ${ctx.config.moduleNpmRegistry} 에서만 받습니다.` });
+  }
+
+  // 외부 패키지는 맨 마지막에: 앞의 점검을 모두 통과했을 때만 내려받습니다 (npm 은 이 서버의 비밀값 없이 돕니다).
+  const pkgPath = path.join(dir, 'package.json');
+  let deps: string[] = [];
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { dependencies?: Record<string, string> };
+      deps = Object.keys(pkg.dependencies ?? {});
+    } catch {
+      checks.push({ label: '의존성', level: 'error', detail: 'package.json 이 JSON 형식이 아닙니다.' });
+    }
+  }
+  if (deps.length === 0) {
+    checks.push({ label: '의존성 라이선스', level: 'ok', detail: '외부 패키지 없음' });
+  } else if (!opts.allowDependencies) {
+    checks.push({ label: '의존성 라이선스', level: 'error', detail: `에이전트가 만든 모듈은 외부 패키지를 쓸 수 없습니다 (${deps.slice(0, 3).join(', ')}${deps.length > 3 ? ' 외' : ''}). Node 내장 모듈과 ctx.fetch 만 쓰세요.` });
+  } else if (checks.some((c) => c.level === 'error')) {
+    checks.push({ label: '의존성 라이선스', level: 'warn', detail: `앞의 문제 때문에 외부 패키지 ${deps.length}개(${deps.slice(0, 3).join(', ')}${deps.length > 3 ? ' 외' : ''})를 내려받지 않았습니다. 문제를 고친 뒤 다시 점검하세요.` });
+  } else {
+    try {
+      await runNpmInstall(dir, ctx.config.moduleCallTimeoutMs * 4, ctx.config);
+      const found = scanNodeModules(dir);
+      const counts = new Map<string, number>();
+      for (const d of found) counts.set(d.license ?? '없음', (counts.get(d.license ?? '없음') ?? 0) + 1);
+      const summary = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([l, n]) => `${l} ${n}`).join(' · ');
+      const risky = found.filter((d) => d.cls === 'copyleft' || d.cls === 'unknown' || d.cls === 'proprietary');
+      if (risky.length > 0) {
+        const r = risky[0] as (typeof risky)[number];
+        checks.push({ label: '의존성 라이선스', level: 'warn', detail: `${found.length}개 중 ${summary} — ${r.name}@${r.version}(${r.license ?? '표기 없음'}, ${licenseLabel(r.cls)})${risky.length > 1 ? ` 외 ${risky.length - 1}개` : ''} 확인 필요` });
+      } else {
+        checks.push({ label: '의존성 라이선스', level: 'ok', detail: `${found.length}개 모두 허용형 · ${summary}` });
+      }
+    } catch (err) {
+      checks.push({ label: '의존성 라이선스', level: 'error', detail: (err as Error).message });
+    }
+  }
+
 
   return { checks, source: sourceLabel, commit, checkedAt: Date.now() };
 }
