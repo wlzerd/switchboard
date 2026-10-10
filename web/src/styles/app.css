@@ -1371,6 +1371,7 @@ a {
 
 /* ─────────── 콘솔 ─────────── */
 .chat {
+  position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1402,6 +1403,61 @@ a {
   background: var(--raised);
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* 사용자 메시지의 첨부: 그림 미리보기 · 파일 칩 */
+.msg-images,
+.msg-docs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 78%;
+}
+.msg-image {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--raised);
+  line-height: 0;
+  cursor: zoom-in;
+  transition: border-color 0.2s;
+}
+.msg-image:hover {
+  border-color: var(--accent);
+}
+.msg-image img {
+  display: block;
+  width: auto;
+  height: 132px;
+  max-width: min(260px, 100%);
+  object-fit: cover;
+}
+.msg-images.one .msg-image img {
+  height: auto;
+  max-height: 260px;
+  max-width: min(360px, 100%);
+}
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 300px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
+  transition: border-color 0.2s;
+}
+.file-chip:hover {
+  border-color: var(--accent);
+}
+.file-chip > svg:last-child {
+  color: var(--text3);
 }
 .msg-agent {
   display: flex;
@@ -1671,6 +1727,126 @@ a {
   font-size: 14px;
   line-height: 1.55;
   max-height: 200px;
+}
+.composer .attach-btn {
+  width: 30px;
+  height: 30px;
+  margin-left: -6px;
+  border: 0;
+  border-radius: 8px;
+}
+.composer .attach-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* 보내기 전 첨부 */
+.att-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 0 4px;
+  margin-left: -4px;
+}
+.att-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 230px;
+  min-width: 0;
+  padding: 4px 4px 4px 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  animation: rise 0.25s ease backwards;
+  transition: border-color 0.2s;
+}
+.att-chip.error {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+.att-thumb {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--raised);
+  color: var(--text2);
+}
+.att-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.att-veil {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+.att-veil.bad {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+.att-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+.att-name {
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.att-size {
+  flex: none;
+  font-size: 11px;
+  color: var(--text3);
+}
+.att-chip.error .att-size {
+  color: var(--danger);
+}
+.att-x {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text3);
+  transition: background 0.15s, color 0.15s;
+}
+.att-x:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+/* 파일을 끌어 대화 칸 위에 올렸을 때 */
+.chat.dropping .composer-box {
+  border-color: var(--accent);
+}
+.drop-veil {
+  position: absolute;
+  inset: 6px;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: calc(var(--radius-lg) - 4px);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
+  pointer-events: none;
+  animation: appear 0.15s ease;
 }
 
 /* ─────────── 고용 ─────────── */

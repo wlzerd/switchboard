@@ -70,7 +70,7 @@ export interface EnvItemView {
   isNew: boolean;
 }
 
-const NEW_ENV = new Set(['AGENT_QUEUE_MAX', 'DELEGATION_MAX_ROUNDS', 'ACTIVITY_KEEP']);
+const NEW_ENV = new Set(['AGENT_QUEUE_MAX', 'DELEGATION_MAX_ROUNDS', 'ACTIVITY_KEEP', 'ATTACHMENT_MAX_MB', 'ATTACHMENTS_PER_MESSAGE']);
 
 export interface SettingsDeps {
   config: Config;
@@ -335,6 +335,8 @@ export class SettingsService {
           val('DELEGATION_MAX_ROUNDS', c.delegationMaxRounds),
           val('HEARTBEAT_MIN_MINUTES', c.heartbeatMinMinutes),
           val('ACTIVITY_KEEP', c.activityKeep),
+          val('ATTACHMENT_MAX_MB', c.attachmentMaxMb),
+          val('ATTACHMENTS_PER_MESSAGE', c.attachmentsPerMessage),
         ],
       },
       {

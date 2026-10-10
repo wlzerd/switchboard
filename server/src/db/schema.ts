@@ -244,4 +244,21 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE schedules ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE schedules ADD COLUMN last_skipped_at INTEGER;
   `,
+  // v8: 콘솔 첨부 (이미지 · 파일). 내용은 DATA_DIR/attachments 에, 보낸 뒤에는 작업 폴더 uploads/ 에도 복사합니다.
+  `
+  CREATE TABLE attachments (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('image', 'pdf', 'text', 'file')),
+    media_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    workspace_path TEXT,
+    created_at INTEGER NOT NULL,
+    used_at INTEGER
+  );
+  CREATE INDEX idx_attachments_unused ON attachments(used_at, created_at);
+  `,
 ];

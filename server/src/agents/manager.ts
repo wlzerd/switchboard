@@ -5,6 +5,7 @@ import path from 'node:path';
 import { EFFORT_LEVELS, type Effort } from '../anthropic/models.ts';
 import type { AnthropicService } from '../anthropic/service.ts';
 import type { ApprovalService } from '../approvals/service.ts';
+import type { AttachmentService } from '../attachments/service.ts';
 import type { Config } from '../config/env.ts';
 import { randomId } from '../crypto/secrets.ts';
 import type { AgentModuleRow, AgentRow, ModuleRow, ReportTarget, Store, TaskRow } from '../db/store.ts';
@@ -97,6 +98,8 @@ export interface ManagerDeps {
   projects: ProjectService;
   /** 모듈 설정 (없으면 '설정 필요' 카드를 띄우지 않음) */
   settings?: SettingsService;
+  /** 콘솔 첨부 */
+  attachments?: AttachmentService;
 }
 
 export interface AgentInput {
@@ -256,6 +259,7 @@ export class AgentManager {
         serverToolLevel: this.serverToolLevel,
         noComputer: this.noComputer,
         projectsFor: (agent) => this.d.projects.list(agent.id).map((p) => ({ name: p.name, path: p.path, note: p.note, watch: p.watch })),
+        ...(this.d.attachments ? { attachments: this.d.attachments } : {}),
         deliver: (agent, env, moduleId, target, text) => this.deliver(agent, env, moduleId, target, text),
         acquireSlot: (signal) => this.slots.acquire(signal),
         onFinished: () => this.pumpAll(),
@@ -444,6 +448,7 @@ export class AgentManager {
     });
     // 화면 제어 기록(스크린샷)도 함께 지웁니다.
     fs.rmSync(path.join(this.d.config.dataDir, 'screens', id), { recursive: true, force: true });
+    this.d.attachments?.removeAgent(id);
     this.d.bus.activity({ type: 'agent.deleted', category: 'agent', tone: 'agent', who: row.name, text: '삭제됨', agentId: null });
     this.d.bus.emit({ type: 'graph.changed' });
   }

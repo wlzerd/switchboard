@@ -153,7 +153,7 @@ sudo systemctl enable --now switchboard
 | 로그인 | `ADMIN_PASSWORD` `SESSION_SECRET` `SESSION_TTL_HOURS` `LOGIN_MAX_ATTEMPTS` `LOGIN_LOCK_MINUTES` |
 | 저장소 | `DATA_DIR` `SECRETS_KEY` |
 | Anthropic | `ANTHROPIC_API_KEY`(선택) `ANTHROPIC_BASE_URL` `AGENT_MAX_TOKENS` `AGENT_COMPACTION` `ANTHROPIC_REFUSAL_FALLBACK` |
-| 실행 | `AGENT_MAX_CONCURRENCY` `AGENT_QUEUE_MAX` `APPROVAL_TIMEOUT_MINUTES` `SHELL_TIMEOUT_MS` `HTTP_TOOL_TIMEOUT_MS` `ACTIVITY_KEEP` |
+| 실행 | `AGENT_MAX_CONCURRENCY` `AGENT_QUEUE_MAX` `APPROVAL_TIMEOUT_MINUTES` `SHELL_TIMEOUT_MS` `HTTP_TOOL_TIMEOUT_MS` `ACTIVITY_KEEP` `ATTACHMENT_MAX_MB` `ATTACHMENTS_PER_MESSAGE` |
 | 스스로 일하기 | `HEARTBEAT_MIN_MINUTES` `DELEGATION_MAX_DEPTH` `DELEGATION_MAX_ROUNDS` |
 | 모듈 | `MODULE_SANDBOX` `MODULE_CALL_TIMEOUT_MS` `MODULE_IDLE_TIMEOUT_MS` `GIT_BIN` |
 | 기본 금지 조항 | `GUARD_FLOOD_PER_MINUTE` `GUARD_LOOP_REPEAT` |
@@ -321,6 +321,25 @@ git 브랜치 · 바뀐 파일 · 마지막 커밋, 최근 활동(프로젝트�
 - "하트비트 점검"을 켠 프로젝트는 하트비트 때 점검할 목록에 들어갑니다. 관리 중인 프로젝트 목록은 에이전트의 시스템 프롬프트에도 들어갑니다.
 - 목록에서 빼도(`project_untrack` 또는 화면) 폴더와 파일은 지우지 않습니다.
 - git 상태는 저장소 설정의 fsmonitor · 필터 · 훅처럼 명령을 실행하는 설정을 끈 채로 읽어, 남이 만든 저장소를 열어도 그 안의 명령이 돌지 않습니다.
+
+## 콘솔 첨부
+
+콘솔 입력창의 클립 버튼, 끌어다 놓기, 붙여넣기(그림)로 파일을 붙여 지시와 함께 보냅니다. 글 없이 첨부만 보내도 됩니다.
+종류는 파일 이름이 아니라 내용으로 판단합니다.
+
+| 종류 | 모델에 보내는 방식 |
+|---|---|
+| 그림 (PNG · JPEG · GIF · WebP) | 그림 그대로. 긴 변이 2576px 를 넘거나 7MB 보다 무거우면 브라우저에서 줄여 올립니다. HEIC 처럼 모델이 받지 않는 형식은 브라우저가 읽을 수 있으면 JPEG 로 바꿉니다 |
+| PDF | 문서로 (글과 그림을 함께 읽음) |
+| 텍스트 (UTF-8, 약 200KB 까지) | 문서로 |
+| 그 밖 (zip · xlsx · 큰 로그 등) | 내용은 보내지 않고 작업 폴더 경로만 알려 줍니다. 에이전트가 도구로 엽니다 |
+
+- 보낸 첨부는 에이전트 작업 폴더의 `uploads/<날짜>/` 에도 복사되어 도구(파일 읽기 · 셸)로 다룰 수 있습니다.
+- 대화 기록에는 첨부 내용 대신 참조만 저장하고, 요청할 때마다 최근 첨부부터 18MB · 20개 안에서만 내용을 다시 싣습니다.
+  그보다 앞의 첨부는 작업 폴더 경로를 알려 주는 글로 대신합니다.
+- 파일 하나는 `ATTACHMENT_MAX_MB`(기본 10MB), 메시지 하나는 `ATTACHMENTS_PER_MESSAGE`(기본 10개) · 합계 18MB 까지입니다.
+- 기본 금지 조항과 같은 기준으로, 비밀 파일 이름(`.env` · `id_rsa` 등)과 서버가 가진 비밀값 · 알려진 토큰 형식이 든 텍스트 파일은 받지 않습니다.
+- 올려 두고 보내지 않은 첨부는 하루 뒤 지웁니다. 첨부는 로그인해야 열 수 있고, 그림이 아닌 파일은 브라우저에서 열리지 않고 내려받기만 됩니다.
 
 ## 화면 제어
 

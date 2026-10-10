@@ -19,15 +19,23 @@ export function setUnauthorizedHandler(fn: () => void): void {
 }
 
 export async function api<T>(path: string, init: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+  return send<T>(path, {
+    method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
+    headers: init.body === undefined ? {} : { 'content-type': 'application/json' },
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+    signal: init.signal,
+  });
+}
+
+/** 파일 하나 올리기: 본문은 파일 내용 그대로, 이름은 X-File-Name 머리글(encodeURIComponent) */
+export async function upload<T>(path: string, file: Blob, name: string, signal?: AbortSignal): Promise<T> {
+  return send<T>(path, { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-file-name': encodeURIComponent(name) }, body: file, signal });
+}
+
+async function send<T>(path: string, init: { method: string; headers: Record<string, string>; body: BodyInit | undefined; signal: AbortSignal | undefined }): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(path, {
-      method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
-      headers: init.body === undefined ? {} : { 'content-type': 'application/json' },
-      body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      credentials: 'same-origin',
-      signal: init.signal,
-    });
+    res = await fetch(path, { ...init, credentials: 'same-origin' });
   } catch (err) {
     if ((err as Error).name === 'AbortError') throw err;
     throw new ApiError('network', '서버에 연결하지 못했습니다. 서버가 켜져 있는지, 주소가 맞는지 확인하세요.', 0, null);

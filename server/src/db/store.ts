@@ -303,6 +303,25 @@ export interface HookVarRow {
   updatedAt: number;
 }
 
+/** image · pdf: 모델에 그대로 보냄 / text: 글로 보냄 / file: 작업 폴더에만 두고 경로를 알려 줌 */
+export type AttachmentKind = 'image' | 'pdf' | 'text' | 'file';
+
+export interface AttachmentRow {
+  id: string;
+  agentId: string;
+  name: string;
+  kind: AttachmentKind;
+  mediaType: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+  /** 보낸 뒤 작업 폴더 안의 경로 (uploads/…) */
+  workspacePath: string | null;
+  createdAt: number;
+  /** 메시지와 함께 보낸 시각. 보내지 않은 첨부는 하루가 지나면 지웁니다 */
+  usedAt: number | null;
+}
+
 export interface HookRow extends RuleHook {
   createdAt: number;
   updatedAt: number;
@@ -979,5 +998,53 @@ export class Store {
   deleteHookVar(name: string): void {
     const r = this.db.run('DELETE FROM hook_vars WHERE name = :name', { name });
     if (r.changes === 0) throw new NotFoundError('훅 값', name);
+  }
+
+  /* 콘솔 첨부 */
+  private attachmentOf(r: Row): AttachmentRow {
+    return {
+      id: str(r, 'id'),
+      agentId: str(r, 'agent_id'),
+      name: str(r, 'name'),
+      kind: str(r, 'kind') as AttachmentKind,
+      mediaType: str(r, 'media_type'),
+      size: num(r, 'size'),
+      width: numOrNull(r, 'width'),
+      height: numOrNull(r, 'height'),
+      workspacePath: strOrNull(r, 'workspace_path'),
+      createdAt: num(r, 'created_at'),
+      usedAt: numOrNull(r, 'used_at'),
+    };
+  }
+  insertAttachment(a: Omit<AttachmentRow, 'id' | 'createdAt' | 'usedAt' | 'workspacePath'>, now = Date.now()): AttachmentRow {
+    const id = randomId('att');
+    this.db.run(
+      `INSERT INTO attachments (id, agent_id, name, kind, media_type, size, width, height, created_at)
+       VALUES (:id, :agentId, :name, :kind, :mediaType, :size, :width, :height, :now)`,
+      { id, agentId: a.agentId, name: a.name, kind: a.kind, mediaType: a.mediaType, size: a.size, width: a.width, height: a.height, now },
+    );
+    return this.getAttachment(id);
+  }
+  findAttachment(id: string): AttachmentRow | null {
+    const r = this.db.get('SELECT * FROM attachments WHERE id = :id', { id });
+    return r ? this.attachmentOf(r) : null;
+  }
+  getAttachment(id: string): AttachmentRow {
+    const a = this.findAttachment(id);
+    if (!a) throw new NotFoundError('첨부', id);
+    return a;
+  }
+  markAttachmentUsed(id: string, workspacePath: string | null, now = Date.now()): void {
+    this.db.run('UPDATE attachments SET used_at = :now, workspace_path = :workspacePath WHERE id = :id', { id, workspacePath, now });
+  }
+  markAttachmentUnused(id: string): void {
+    this.db.run('UPDATE attachments SET used_at = NULL, workspace_path = NULL WHERE id = :id', { id });
+  }
+  deleteAttachment(id: string): void {
+    this.db.run('DELETE FROM attachments WHERE id = :id', { id });
+  }
+  /** 보내지 않은 채 before 보다 오래된 첨부 (지울 대상) */
+  staleAttachments(before: number, limit: number): AttachmentRow[] {
+    return this.db.all('SELECT * FROM attachments WHERE used_at IS NULL AND created_at < :before ORDER BY created_at LIMIT :limit', { before, limit }).map((r) => this.attachmentOf(r));
   }
 }

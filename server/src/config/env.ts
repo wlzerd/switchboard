@@ -59,6 +59,10 @@ export interface Config {
   agentQueueMax: number;
   /** 활동 기록을 이만큼만 남기고 오래된 것부터 지웁니다 */
   activityKeep: number;
+  /** 콘솔 첨부 파일 하나의 최대 크기(MB) */
+  attachmentMaxMb: number;
+  /** 메시지 하나에 붙일 수 있는 첨부 수 */
+  attachmentsPerMessage: number;
   /** 하트비트 최소 간격(분) */
   heartbeatMinMinutes: number;
 }
@@ -247,6 +251,8 @@ export function parseConfig(env: Env, rootDir: string): Config {
     delegationMaxRounds: r.int('DELEGATION_MAX_ROUNDS', 3, 1, 20),
     agentQueueMax: r.int('AGENT_QUEUE_MAX', 50, 1, 10000),
     activityKeep: r.int('ACTIVITY_KEEP', 5000, 100, 1_000_000),
+    attachmentMaxMb: r.int('ATTACHMENT_MAX_MB', 10, 1, 20),
+    attachmentsPerMessage: r.int('ATTACHMENTS_PER_MESSAGE', 10, 1, 20),
     heartbeatMinMinutes: r.int('HEARTBEAT_MIN_MINUTES', 5, 1, 1440),
   };
 

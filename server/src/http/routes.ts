@@ -7,6 +7,8 @@ import { CHECKLIST_MAX, HEARTBEAT_MAX_MINUTES } from '../agents/autonomy.ts';
 import { SCREEN_AGENT_RE, SCREEN_FILE_RE } from '../agents/screen.ts';
 import { EFFORT_LEVELS } from '../anthropic/models.ts';
 import type { App } from '../app.ts';
+import { IMAGE_MAX_BYTES, IMAGE_SEND_EDGE } from '../attachments/media.ts';
+import { attachmentView, MESSAGE_MAX_BYTES } from '../attachments/service.ts';
 import { randomId } from '../crypto/secrets.ts';
 import type { ApprovalStatus, ScheduleRow } from '../db/store.ts';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.ts';
@@ -139,6 +141,7 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     tz: process.env['TZ'] || 'UTC',
     envKey: Boolean(app.config.anthropicApiKey),
     heartbeat: { minMinutes: app.config.heartbeatMinMinutes, maxMinutes: HEARTBEAT_MAX_MINUTES, checklistMax: CHECKLIST_MAX },
+    attachments: { maxBytes: app.config.attachmentMaxMb * 1024 * 1024, perMessage: app.config.attachmentsPerMessage, messageMaxBytes: MESSAGE_MAX_BYTES, imageMaxBytes: IMAGE_MAX_BYTES, imageSendEdge: IMAGE_SEND_EDGE },
   }));
 
   server.get('/api/activity', async (req) => ({ items: store.listActivity(intQuery(req, 'limit', 50, 1, 500)) }));
@@ -410,11 +413,56 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
     const agent = store.getAgent(param(req, 'id'));
     const b = readBody(req);
     const text = typeof b['text'] === 'string' ? b['text'].trim() : '';
-    if (text === '') throw new ValidationError('message_empty', '지시 내용을 입력하세요.');
     if (text.length > 20_000) throw new ValidationError('message_long', `지시는 20,000자까지 보낼 수 있습니다. 지금 ${text.length}자입니다.`);
-    const task = manager.enqueue({ agentId: agent.id, source: 'console', sourceLabel: '웹 콘솔', origin: 'console', text, reply: null });
-    reply.status(202);
-    return { task };
+    const files = app.attachments.take(agent, b['attachments']);
+    if (text === '' && files.length === 0) throw new ValidationError('message_empty', '지시 내용을 입력하거나 파일을 첨부하세요.');
+    // 첨부는 작업 폴더에 복사하고 보냄 표시를 한 뒤 작업을 넣습니다. 작업을 넣지 못하면(대기열 가득 등) 되돌립니다.
+    const committed = app.attachments.commit(agent, files);
+    try {
+      const task = manager.enqueue({ agentId: agent.id, source: 'console', sourceLabel: '웹 콘솔', origin: 'console', text, reply: null, ...(committed.length > 0 ? { attachments: committed } : {}) });
+      reply.status(202);
+      return { task };
+    } catch (err) {
+      app.attachments.rollback(agent, committed);
+      throw err;
+    }
+  });
+
+  /* ───── 콘솔 첨부 ───── */
+  /** 파일 하나 올리기: 본문은 파일 내용 그대로(application/octet-stream), 이름은 X-File-Name (encodeURIComponent) */
+  server.post<IdParams>('/api/agents/:id/attachments', { bodyLimit: app.config.attachmentMaxMb * 1024 * 1024 + 64 * 1024 }, async (req, reply) => {
+    const agent = store.getAgent(param(req, 'id'));
+    if (!Buffer.isBuffer(req.body)) throw new ValidationError('attachment_body', '파일 내용을 Content-Type: application/octet-stream 으로 보내세요.');
+    const header = req.headers['x-file-name'];
+    let name: string | undefined;
+    try {
+      name = typeof header === 'string' ? decodeURIComponent(header) : undefined;
+    } catch {
+      throw new ValidationError('attachment_name', '파일 이름(X-File-Name)은 encodeURIComponent 로 인코딩해 보내세요.');
+    }
+    const row = app.attachments.save(agent, name, req.body);
+    reply.status(201);
+    return { attachment: attachmentView(row) };
+  });
+
+  /** 보내기 전의 첨부 지우기 */
+  server.delete<IdParams>('/api/attachments/:id', async (req) => {
+    app.attachments.remove(param(req, 'id'));
+    return { ok: true };
+  });
+
+  /** 첨부 내용: 그림만 바로 보여 주고 나머지는 내려받게 합니다 (HTML · SVG 같은 파일이 이 주소에서 실행되지 않게) */
+  server.get<IdParams>('/api/attachments/:id', async (req, reply) => {
+    const a = store.getAttachment(param(req, 'id'));
+    const file = app.attachments.filePath(a);
+    if (!fs.existsSync(file)) throw new NotFoundError('첨부 내용', a.name);
+    const type = a.kind === 'image' ? a.mediaType : a.kind === 'pdf' ? 'application/pdf' : a.kind === 'text' ? 'text/plain; charset=utf-8' : 'application/octet-stream';
+    reply.header('Content-Type', type);
+    reply.header('Content-Disposition', `${a.kind === 'image' ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(a.name)}`);
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+    reply.header('Cache-Control', 'private, max-age=86400');
+    return reply.send(fs.createReadStream(file));
   });
 
   server.get<IdParams>('/api/agents/:id/tasks', async (req) => ({ tasks: store.listTasks(store.getAgent(param(req, 'id')).id, intQuery(req, 'limit', 20, 1, 200)), live: manager.live(param(req, 'id')) }));

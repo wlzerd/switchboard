@@ -1,17 +1,19 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AgentEditModal } from '../components/AgentEdit';
+import { hasFiles, MessageFiles, PendingFiles, useAttachments, type Attachments } from '../components/Attach';
 import { Icon } from '../components/Icon';
 import { shortModel } from '../components/Shell';
 import { Avatar, Modal, ModuleIcon, Seg, StatusLine, Steps, Switch } from '../components/ui';
 import { EFFORT_LABEL } from '../lib/agent';
 import { api, errorText } from '../lib/api';
+import { attachmentsOf, DEFAULT_LIMITS, totalError } from '../lib/attachments';
 import { MODE_LABEL } from '../lib/folders';
 import { delegationChips, intervalLabel } from '../lib/autonomy';
 import { clock, relTime } from '../lib/format';
 import { navigate } from '../lib/router';
 import { onServerEvent, refreshOverview, toast, useApp } from '../lib/store';
 import { appendCapped, prependOlder, TIMELINE_KEEP, TIMELINE_PAGE } from '../lib/timeline';
-import type { AgentView, Meta, Overview, ScheduleView, TaskView, ThreadView, TimelineItem } from '../lib/types';
+import type { AgentView, AttachmentLimits, Meta, Overview, ScheduleView, TaskView, ThreadView, TimelineItem } from '../lib/types';
 
 const ACTIVE: ReadonlySet<string> = new Set(['queued', 'running', 'waiting']);
 const MESSAGE_MAX = 20_000;
@@ -364,16 +366,19 @@ function ScreenItem({ d }: { d: Record<string, unknown> }) {
 function TimelineEntry({ item, agent, tz }: { item: TimelineItem; agent: AgentView; tz: string }) {
   const d = item.data;
   switch (item.kind) {
-    case 'user':
+    case 'user': {
+      const files = attachmentsOf(d);
       return (
         <div className="msg-user">
-          <div className="bubble">{str(d, 'text')}</div>
+          {files.length > 0 ? <MessageFiles files={files} /> : null}
+          {str(d, 'text') ? <div className="bubble">{str(d, 'text')}</div> : null}
           <span className="muted" style={{ fontSize: 11.5 }}>
             {str(d, 'src') ? `${str(d, 'src')} · ` : ''}
             {clock(item.createdAt, tz)}
           </span>
         </div>
       );
+    }
     case 'agent':
       return (
         <div className="msg-agent">
@@ -523,12 +528,17 @@ function SetupItem({ d }: { d: Record<string, unknown> }) {
 
 /* ───────── 대화 ───────── */
 
-function Composer({ agent, running, onSent }: { agent: AgentView; running: TaskView | null; onSent: () => void }) {
+function Composer({ agent, running, onSent, attach, limits }: { agent: AgentView; running: TaskView | null; onSent: () => void; attach: Attachments; limits: AttachmentLimits }) {
   const [text, setText] = useState(() => readDraft(agent.id));
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const files = attach.items;
+  const ready = files.filter((f) => f.state === 'ready');
+  const failed = files.filter((f) => f.state === 'error');
+  const uploading = files.some((f) => f.state === 'working');
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -544,17 +554,28 @@ function Composer({ agent, running, onSent }: { agent: AgentView; running: TaskV
 
   const send = async (): Promise<void> => {
     const body = text.trim();
-    if (!body || sending) return;
+    if ((!body && files.length === 0) || sending || uploading) return;
     if (body.length > MESSAGE_MAX) {
       setError(`지시는 ${MESSAGE_MAX.toLocaleString()}자까지 보낼 수 있습니다. 지금 ${body.length.toLocaleString()}자입니다.`);
       return;
     }
+    if (failed.length > 0) {
+      setError(`첨부하지 못한 파일(${failed.map((f) => `'${f.name}'`).join(', ')})을 빼야 보낼 수 있습니다.`);
+      return;
+    }
+    const over = totalError(ready.map((f) => f.size), limits);
+    if (over) {
+      setError(over);
+      return;
+    }
+    const ids = ready.flatMap((f) => (f.view ? [f.view.id] : []));
     setSending(true);
     setError(null);
     try {
-      await api(`/api/agents/${agent.id}/messages`, { body: { text: body } });
+      await api(`/api/agents/${agent.id}/messages`, { body: { text: body, ...(ids.length > 0 ? { attachments: ids } : {}) } });
       setText('');
       writeDraft(agent.id, '');
+      attach.clear();
       onSent();
     } catch (err) {
       setError(errorText(err));
@@ -577,6 +598,7 @@ function Composer({ agent, running, onSent }: { agent: AgentView; running: TaskV
   };
 
   const length = text.trim().length;
+  const shown = error ?? attach.notice ?? failed[0]?.error ?? null;
   return (
     <form
       className="composer"
@@ -586,6 +608,15 @@ function Composer({ agent, running, onSent }: { agent: AgentView; running: TaskV
       }}
     >
       <div className="composer-box">
+        {files.length > 0 ? (
+          <PendingFiles
+            items={files}
+            onRemove={(key) => {
+              attach.remove(key);
+              setError(null);
+            }}
+          />
+        ) : null}
         <textarea
           ref={ref}
           rows={1}
@@ -602,8 +633,31 @@ function Composer({ agent, running, onSent }: { agent: AgentView; running: TaskV
               void send();
             }
           }}
+          onPaste={(e) => {
+            // 그림만 복사한 경우에만 첨부합니다 (표 · 문서를 복사하면 글과 그림이 함께 오므로 글을 붙임).
+            const pasted = Array.from(e.clipboardData.files);
+            if (pasted.length === 0 || e.clipboardData.types.includes('text/plain')) return;
+            e.preventDefault();
+            setError(null);
+            attach.add(pasted, true);
+          }}
         />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button type="button" className="icon-btn attach-btn" aria-label="파일 첨부" disabled={files.length >= limits.perMessage} onClick={() => picker.current?.click()}>
+            <Icon name="clip" size={16} stroke={2} />
+          </button>
+          <input
+            ref={picker}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              setError(null);
+              attach.add(Array.from(e.target.files ?? []));
+              // 같은 파일을 다시 고를 수 있게 비웁니다.
+              e.target.value = '';
+            }}
+          />
           <span className="chip mono">{shortModel(agent.model, agent.modelName)}</span>
           {agent.effort ? <span className="chip">{EFFORT_LABEL[agent.effort]}</span> : null}
           {length > MESSAGE_MAX * 0.9 ? (
@@ -618,14 +672,14 @@ function Composer({ agent, running, onSent }: { agent: AgentView; running: TaskV
               중지
             </button>
           ) : null}
-          <button type="submit" className="btn primary sm" style={{ width: 36, padding: 0 }} aria-label="보내기" disabled={sending || length === 0}>
-            {sending ? <span className="spinner" style={{ width: 14, height: 14, borderTopColor: 'var(--onAccent)' }} /> : <Icon name="arrowUp" size={17} stroke={2.4} />}
+          <button type="submit" className="btn primary sm" style={{ width: 36, padding: 0 }} aria-label="보내기" disabled={sending || uploading || (length === 0 && files.length === 0)}>
+            {sending || uploading ? <span className="spinner" style={{ width: 14, height: 14, borderTopColor: 'var(--onAccent)' }} /> : <Icon name="arrowUp" size={17} stroke={2.4} />}
           </button>
         </div>
       </div>
-      {error ? (
+      {shown ? (
         <span className="err" role="alert" style={{ display: 'block', marginTop: 8 }}>
-          {error}
+          {shown}
         </span>
       ) : null}
     </form>
@@ -634,6 +688,28 @@ function Composer({ agent, running, onSent }: { agent: AgentView; running: TaskV
 
 function Chat({ agent, source, threads, onSource }: { agent: AgentView; source: string; threads: ThreadView[]; onSource: (s: string) => void }) {
   const tz = useApp((s) => s.meta?.tz ?? 'UTC');
+  const limits = useApp((s) => s.meta?.attachments) ?? DEFAULT_LIMITS;
+  const attach = useAttachments(agent.id, limits);
+  const writable = source === 'console';
+  const [dragging, setDragging] = useState(false);
+  const depth = useRef(0);
+
+  useEffect(() => {
+    if (!writable) return undefined;
+    // 대화 칸 밖에 파일을 놓으면 브라우저가 그 파일을 열며 이 화면을 떠나므로 막습니다.
+    const guard = (e: DragEvent): void => {
+      if (e.defaultPrevented || !hasFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+    };
+    window.addEventListener('dragover', guard);
+    window.addEventListener('drop', guard);
+    return () => {
+      window.removeEventListener('dragover', guard);
+      window.removeEventListener('drop', guard);
+    };
+  }, [writable]);
+
   const { items, live, loading, error, retry, more, olderLoading, loadOlder } = useTimeline(agent.id, source);
   const status = agent.paused ? 'paused' : agent.status;
   const task = agent.task;
@@ -649,7 +725,33 @@ function Chat({ agent, source, threads, onSource }: { agent: AgentView; source: 
   const toLatest = (): void => scroller.current?.scrollTo({ top: 0, behavior: 'smooth' });
 
   return (
-    <section className="card chat" aria-label={`${agent.name} 대화`}>
+    <section
+      className={`card chat${dragging ? ' dropping' : ''}`}
+      aria-label={`${agent.name} 대화`}
+      onDragEnter={(e) => {
+        if (!writable || !hasFiles(e)) return;
+        e.preventDefault();
+        depth.current += 1;
+        setDragging(true);
+      }}
+      onDragOver={(e) => {
+        if (!writable || !hasFiles(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={(e) => {
+        if (!writable || !hasFiles(e)) return;
+        depth.current = Math.max(0, depth.current - 1);
+        if (depth.current === 0) setDragging(false);
+      }}
+      onDrop={(e) => {
+        if (!writable || !hasFiles(e)) return;
+        e.preventDefault();
+        depth.current = 0;
+        setDragging(false);
+        attach.add(Array.from(e.dataTransfer.files));
+      }}
+    >
       <div className="card-head">
         <Avatar name={agent.name} color={agent.color} size={30} status={status} />
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.3 }}>
@@ -727,8 +829,13 @@ function Chat({ agent, source, threads, onSource }: { agent: AgentView; source: 
           ) : null}
         </div>
       </div>
-      {source === 'console' ? (
-        <Composer agent={agent} running={running} onSent={toLatest} />
+      {dragging ? (
+        <div className="drop-veil" aria-hidden="true">
+          <Icon name="clip" size={30} stroke={1.8} />
+        </div>
+      ) : null}
+      {writable ? (
+        <Composer agent={agent} running={running} onSent={toLatest} attach={attach} limits={limits} />
       ) : (
         <div className="composer" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text3)', fontSize: 12.5 }}>
           <Icon name="eye" size={15} />

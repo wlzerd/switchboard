@@ -17,7 +17,8 @@ const BODY_LIMIT = 16 * 1024 * 1024;
 export function readBody(req: FastifyRequest): Record<string, unknown> {
   const b = req.body;
   if (b === null || b === undefined) return {};
-  if (typeof b !== 'object' || Array.isArray(b)) throw new ValidationError('body_type', '요청 본문은 JSON 객체여야 합니다.');
+  // 첨부 올리기용 application/octet-stream 본문(Buffer)도 JSON 객체가 아닙니다.
+  if (typeof b !== 'object' || Array.isArray(b) || Buffer.isBuffer(b)) throw new ValidationError('body_type', '요청 본문은 JSON 객체여야 합니다.');
   return b as Record<string, unknown>;
 }
 
@@ -119,10 +120,14 @@ export async function buildServer(app: App): Promise<FastifyInstance> {
     }
     const e = err as { code?: string; statusCode?: number; name?: string; message?: string };
     if (e.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+      if (/\/attachments\/?(\?|$)/.test(req.url)) {
+        return reply.status(413).send({ error: { code: 'attachment_large', message: `첨부 파일이 한도(${app.config.attachmentMaxMb}MB)를 넘습니다.`, detail: null } });
+      }
       return reply.status(413).send({ error: { code: 'body_too_large', message: `요청 본문이 ${BODY_LIMIT / 1024 / 1024}MB 를 넘습니다.`, detail: null } });
     }
     if (e.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE') {
-      return reply.status(415).send({ error: { code: 'media_type', message: 'Content-Type 은 application/json 이어야 합니다.', detail: null } });
+      const upload = req.method === 'POST' && /\/attachments\/?(\?|$)/.test(req.url);
+      return reply.status(415).send({ error: { code: 'media_type', message: upload ? '파일 내용을 Content-Type: application/octet-stream 으로 보내세요.' : 'Content-Type 은 application/json 이어야 합니다.', detail: null } });
     }
     if (e.code === 'FST_ERR_CTP_EMPTY_JSON_BODY') {
       return reply.status(400).send({ error: { code: 'body_empty', message: 'Content-Type 이 JSON 인데 본문이 비어 있습니다. JSON 객체를 보내세요.', detail: null } });
@@ -134,6 +139,9 @@ export async function buildServer(app: App): Promise<FastifyInstance> {
     app.log.error('처리하지 못한 오류', { incident, method: req.method, url: req.url, error: e.message, stack: (err as Error).stack });
     return reply.status(500).send({ error: { code: 'internal', message: `서버 내부 오류가 났습니다 (사건 번호 ${incident}): ${e.message ?? '알 수 없음'}. 서버 로그에서 이 번호를 찾으세요.`, detail: { incident } } });
   });
+
+  // 첨부 올리기: 파일 내용을 그대로 받습니다 (크기 한도는 그 경로에서 정함).
+  server.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
 
   /* 로그인 */
   server.post('/api/auth/login', async (req, reply) => {

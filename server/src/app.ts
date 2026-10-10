@@ -4,6 +4,7 @@ import { AgentManager } from './agents/manager.ts';
 import { loadPresets, type Preset } from './agents/presets.ts';
 import { AnthropicService } from './anthropic/service.ts';
 import { ApprovalService } from './approvals/service.ts';
+import { AttachmentService } from './attachments/service.ts';
 import type { Config } from './config/env.ts';
 import { Db } from './db/sqlite.ts';
 import { Store } from './db/store.ts';
@@ -34,6 +35,7 @@ export interface App {
   manager: AgentManager;
   settings: SettingsService;
   projects: ProjectService;
+  attachments: AttachmentService;
   presets: Map<string, Preset>;
   fileHooks: { hooks: FileHook[]; errors: FileHookError[] };
   reloadFileHooks: () => Promise<void>;
@@ -119,7 +121,8 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
       return fs.realpathSync.native(dir);
     },
   });
-  const manager = new AgentManager({ config, store, bus, log: log.child('agents'), anthropic, registry, hooks, approvals, guardState, scheduler, presets, secretDirs: guardLists.secretDirectories, projects, settings });
+  const attachments = new AttachmentService({ config, store, lists: guardLists, knownSecrets: guardEnv.knownSecrets });
+  const manager = new AgentManager({ config, store, bus, log: log.child('agents'), anthropic, registry, hooks, approvals, guardState, scheduler, presets, secretDirs: guardLists.secretDirectories, projects, settings, attachments });
 
   registry.init();
   manager.init();
@@ -139,6 +142,7 @@ export async function createApp(config: Config, log: Logger): Promise<App> {
     manager,
     settings,
     projects,
+    attachments,
     presets,
     get fileHooks() {
       return app.fileHooks;

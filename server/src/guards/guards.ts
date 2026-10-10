@@ -72,6 +72,11 @@ export function shellArgPath(arg: string, cwd: string, shellHome: string): strin
 
 const SAFE_DEVICES = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/stdin', '/dev/zero', '/dev/random', '/dev/urandom']);
 
+/** 비밀 파일로 보이는 이름인지 (.env · 키 파일 · 비밀 폴더 등). 콘솔 첨부에서도 씁니다 */
+export function isSecretFileName(name: string, lists: GuardLists): boolean {
+  return isSecretPath(name, lists);
+}
+
 function isSecretPath(p: string, lists: GuardLists): boolean {
   const base = path.basename(p);
   const lower = base.toLowerCase();

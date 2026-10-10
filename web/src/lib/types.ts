@@ -313,6 +313,33 @@ export interface Meta {
   tz: string;
   envKey: boolean;
   heartbeat: { minMinutes: number; maxMinutes: number; checklistMax: number };
+  attachments: AttachmentLimits;
+}
+
+/** 콘솔 첨부 한도 (서버 환경 설정 · Claude API 한도) */
+export interface AttachmentLimits {
+  /** 파일 하나 */
+  maxBytes: number;
+  /** 메시지 하나에 붙이는 개수 */
+  perMessage: number;
+  /** 메시지 하나에 붙이는 합계 */
+  messageMaxBytes: number;
+  /** 모델이 받는 그림 하나 */
+  imageMaxBytes: number;
+  /** 모델이 줄이지 않고 보는 긴 변 (올리기 전에 이 크기로 줄임) */
+  imageSendEdge: number;
+}
+
+export type AttachmentKind = 'image' | 'pdf' | 'text' | 'file';
+
+/** 올린 첨부 (서버가 내용으로 종류를 정함) */
+export interface AttachmentView {
+  id: string;
+  name: string;
+  kind: AttachmentKind;
+  size: number;
+  width: number | null;
+  height: number | null;
 }
 
 export interface ModelInfo {

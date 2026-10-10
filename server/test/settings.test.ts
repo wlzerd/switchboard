@@ -166,7 +166,7 @@ describe('.env 읽기 전용 보기', () => {
     expect(by.get('SESSION_SECRET')?.value).toBe('설정됨');
     expect(by.get('SECRETS_KEY')?.value).toMatch(/^설정됨 · [0-9a-f]{4} [0-9a-f]{4}$/);
     expect(by.get('ANTHROPIC_API_KEY')).toMatchObject({ value: '비어 있음', tone: 'muted' });
-    expect(items.filter((i) => i.isNew).map((i) => i.key).sort()).toEqual(['ACTIVITY_KEEP', 'AGENT_QUEUE_MAX', 'DELEGATION_MAX_ROUNDS']);
+    expect(items.filter((i) => i.isNew).map((i) => i.key).sort()).toEqual(['ACTIVITY_KEEP', 'AGENT_QUEUE_MAX', 'ATTACHMENTS_PER_MESSAGE', 'ATTACHMENT_MAX_MB', 'DELEGATION_MAX_ROUNDS']);
     expect(JSON.stringify(items)).not.toContain('xxxxxxxxxxxx');
   });
 });

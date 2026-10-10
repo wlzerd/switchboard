@@ -7,7 +7,8 @@ import { clampMaxTokens, type ModelSummary } from '../anthropic/models.ts';
 import type { AnthropicService } from '../anthropic/service.ts';
 import type { Config } from '../config/env.ts';
 import { sha256 } from '../crypto/secrets.ts';
-import type { AgentRow, ReportTarget, Store, TaskRow, TaskStep } from '../db/store.ts';
+import { attachmentView, type AttachmentService } from '../attachments/service.ts';
+import type { AgentRow, AttachmentRow, ReportTarget, Store, TaskRow, TaskStep } from '../db/store.ts';
 import { AnthropicCallError, AppError, LimitError } from '../errors.ts';
 import type { AgentLiveStatus, EventBus } from '../events/bus.ts';
 import type { GuardState } from '../guards/guards.ts';
@@ -49,6 +50,8 @@ export interface TaskInput {
   rounds?: Record<string, number>;
   /** 예약 실행이면 그 예약 id (같은 예약이 겹쳐 쌓이지 않게) */
   scheduleId?: string;
+  /** 콘솔에서 붙인 첨부 (보냄 처리 · 작업 폴더 복사를 마친 것) */
+  attachments?: AttachmentRow[];
 }
 
 /** 작업이 끝났을 때 AgentManager 에 알리는 내용 (위임 결과 반환 · 하트비트 알림) */
@@ -81,6 +84,8 @@ export interface RuntimeDeps {
   noComputer: Set<string>;
   /** 시스템 프롬프트에 넣을 관리 중인 프로젝트 */
   projectsFor: (agent: AgentRow) => { name: string; path: string; note: string; watch: boolean }[];
+  /** 콘솔 첨부: 대화 기록에 참조로 저장하고 보낼 때 펼침 (없으면 첨부를 다루지 않음) */
+  attachments?: AttachmentService;
   deliver: (agent: AgentRow, env: ToolEnv, moduleId: string, target: string, text: string) => Promise<string>;
   acquireSlot: (signal: AbortSignal) => Promise<() => void>;
   onFinished: () => void;
@@ -244,11 +249,12 @@ export class AgentRuntime {
       throw new LimitError('queue_full', `'${agent.name}'의 대기열이 가득 차(${max}건) 새 작업을 받지 않았습니다. 대기 중인 작업을 취소하거나 끝나기를 기다리세요.`, { max });
     }
     const thread = this.d.store.getOrCreateThread(this.agentId, input.source, input.sourceLabel);
-    const title = input.title ?? input.text.replace(/\s+/g, ' ').slice(0, 60);
+    const files = input.attachments ?? [];
+    const title = input.title ?? (input.text.trim() !== '' ? input.text.replace(/\s+/g, ' ').slice(0, 60) : `첨부 · ${files.map((a) => a.name).join(', ')}`.slice(0, 60));
     const quiet = input.quiet === true;
     const task = this.d.store.insertTask({ agentId: this.agentId, threadId: thread.id, title, origin: input.origin, quiet, delegatedBy: input.delegation?.fromAgentId ?? null });
     if (!quiet) {
-      const item = this.d.store.addTimeline(thread.id, task.id, 'user', { text: input.text, src: input.sourceLabel });
+      const item = this.d.store.addTimeline(thread.id, task.id, 'user', { text: input.text, src: input.sourceLabel, ...(files.length > 0 ? { attachments: files.map(attachmentView) } : {}) });
       this.d.bus.emit({ type: 'timeline.add', agentId: this.agentId, item });
       this.d.bus.emit({ type: 'task.update', task });
     }
@@ -484,7 +490,8 @@ export class AgentRuntime {
       const prior = store.listMessages(thread.id).map((m) => ({ role: m.role, content: m.content }));
       const fix = danglingToolResults(prior);
       if (fix) store.appendMessage(thread.id, 'user', fix.content);
-      store.appendMessage(thread.id, 'user', `${userHeader(input.sourceLabel, new Date(), tz)}\n${input.text}`);
+      const said = `${userHeader(input.sourceLabel, new Date(), tz)}\n${input.text}`;
+      store.appendMessage(thread.id, 'user', this.d.attachments && input.attachments?.length ? this.d.attachments.messageContent(said, input.attachments) : said);
 
       const model = await this.d.anthropic.modelInfo(agent.keyId, agent.model);
       const client = this.d.anthropic.client(agent.keyId);
@@ -544,7 +551,8 @@ export class AgentRuntime {
           model: agent.model,
           max_tokens: clampMaxTokens(config.agentMaxTokens, model),
           system: [{ type: 'text', text: system }],
-          messages: history,
+          // 첨부는 기록에 참조로만 있고, 보낼 때 최근 것부터 한도 안에서 실제 내용으로 펼칩니다.
+          messages: this.d.attachments ? this.d.attachments.expand(history) : history,
           tools,
           cache_control: { type: 'ephemeral' },
           ...(betas.length > 0 ? { betas } : {}),
