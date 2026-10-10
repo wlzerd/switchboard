@@ -72,9 +72,20 @@ export function parseRepoList(raw) {
  * @param {Record<string, string | undefined>} env
  * @returns {{ token: string, repos: { owner: string, repo: string, full: string }[], checkMinutes: number }}
  */
+/** 토큰 종류: GitHub 로그인(OAuth 앱)으로 받은 토큰은 gho_ 로 시작합니다. 나머지는 붙여 넣은 개인 액세스 토큰으로 봅니다. */
+export function tokenKind(token) {
+  return typeof token === 'string' && token.startsWith('gho_') ? 'oauth' : 'pat';
+}
+
+/** 응답 머리글의 OAuth 권한 범위 (로그인 토큰일 때만 옴). 'repo, gist' → ['repo', 'gist'] */
+function oauthScopes(headers) {
+  const raw = headers?.get?.('x-oauth-scopes');
+  return typeof raw === 'string' ? raw.split(/[\s,]+/).filter(Boolean) : null;
+}
+
 export function parseConfig(env) {
   const token = String(env.GITHUB_TOKEN ?? '').trim();
-  if (token === '') throw new Error("'토큰'(GITHUB_TOKEN)이 비어 있습니다. 설정 화면의 GitHub 모듈에 fine-grained 개인 액세스 토큰을 넣으세요.");
+  if (token === '') throw new Error("'토큰'(GITHUB_TOKEN)이 비어 있습니다. 설정 화면의 GitHub 모듈에 fine-grained 개인 액세스 토큰을 넣거나 GitHub 로그인을 하세요.");
   if (/\s/.test(token)) throw new Error("'토큰'(GITHUB_TOKEN)에 공백이나 줄바꿈이 들어 있습니다. 복사한 값을 다시 확인해 넣으세요.");
   const repos = parseRepoList(env.GITHUB_REPOS ?? '');
   const rawMin = String(env.GITHUB_CHECK_MINUTES ?? '').trim();
@@ -408,7 +419,7 @@ export function rateLimitUntil(status, data, headers, now = Date.now()) {
  * @param {number} status
  * @param {unknown} data 응답 본문 (JSON 이면 객체)
  * @param {{ get(name: string): string | null }} headers
- * @param {{ repo?: string, what?: string, now?: number }} [about]
+ * @param {{ repo?: string, what?: string, now?: number, auth?: 'oauth' | 'pat' }} [about]
  */
 export function describeHttpError(status, data, headers, about = {}) {
   const ghMessage = data && typeof data === 'object' && typeof data.message === 'string' ? data.message : typeof data === 'string' ? clip(data.trim(), 200) : '';
@@ -417,7 +428,12 @@ export function describeHttpError(status, data, headers, about = {}) {
   const target = about.repo ? `'${about.repo}'` : '저장소';
   const what = about.what ? ` ${about.what}` : '';
   const now = about.now ?? Date.now();
-  if (status === 401) return 'GitHub 토큰이 맞지 않거나 만료되었습니다 (401). 설정 화면의 GitHub 모듈에서 토큰을 새로 넣으세요.';
+  const oauth = about.auth === 'oauth';
+  if (status === 401) {
+    return oauth
+      ? 'GitHub 로그인이 풀렸습니다 (401). 설정 화면의 GitHub 모듈에서 다시 로그인하세요.'
+      : 'GitHub 토큰이 맞지 않거나 만료되었습니다 (401). 설정 화면의 GitHub 모듈에서 토큰을 새로 넣으세요.';
+  }
   const until = rateLimitUntil(status, data, headers, now);
   if (until !== null) {
     if (headers?.get?.('x-ratelimit-remaining') === '0') {
@@ -425,10 +441,20 @@ export function describeHttpError(status, data, headers, about = {}) {
     }
     return `GitHub 가 짧은 시간에 너무 많은 요청을 받아 잠시 막았습니다 (${status}). 약 ${Math.max(1, Math.ceil((until - now) / 1000))}초 뒤에 다시 하세요.`;
   }
+  const scopes = oauth ? oauthScopes(headers) : null;
   if (status === 403) {
+    if (oauth) {
+      return `로그인한 계정에 이 작업 권한이 없습니다 (403${what}). ${target}에 쓰기 권한이 있는지, 조직이 OAuth 앱 접근을 막지 않았는지 확인하세요.${scopes ? ` 로그인 권한: ${scopes.join(', ') || '(없음)'}` : ''}${gh ? ` GitHub: ${gh}` : ''}`;
+    }
     return `토큰에 이 작업 권한이 없습니다 (403${what}). fine-grained 토큰을 만들 때 ${target}을(를) 골랐는지, Issues · Pull requests · Contents 권한을 '읽기·쓰기'로 주었는지 확인하세요.${gh ? ` GitHub: ${gh}` : ''}`;
   }
-  if (status === 404) return `${target}${what}을(를) 찾을 수 없습니다 (404). 이름이 맞는지, 토큰이 이 저장소에 접근할 수 있는지(fine-grained 토큰은 만들 때 고른 저장소만) 확인하세요.`;
+  if (status === 404) {
+    if (oauth) {
+      const publicOnly = scopes !== null && !scopes.includes('repo');
+      return `${target}${what}을(를) 찾을 수 없습니다 (404). 이름이 맞는지 확인하세요.${publicOnly ? " 로그인할 때 '공개 저장소만' 허락해 비공개 저장소는 보이지 않습니다. 비공개 저장소를 쓰려면 '비공개 저장소 포함'으로 다시 로그인하세요." : ''}`;
+    }
+    return `${target}${what}을(를) 찾을 수 없습니다 (404). 이름이 맞는지, 토큰이 이 저장소에 접근할 수 있는지(fine-grained 토큰은 만들 때 고른 저장소만) 확인하세요.`;
+  }
   if (status === 409) return `GitHub 가 충돌로 거절했습니다 (409${what}).${gh ? ` GitHub: ${gh}` : ''}`;
   if (status === 410) return `${target}은(는) 이 기능(이슈 등)을 꺼 두었습니다 (410).${gh ? ` GitHub: ${gh}` : ''}`;
   if (status === 422) return `GitHub 가 요청을 받지 않았습니다 (422${what}).${gh ? ` GitHub: ${gh}` : ''}`;

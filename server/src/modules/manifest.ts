@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { ModuleError } from '../errors.ts';
+import { matchHost } from '../permissions/match.ts';
 
 export const MODULE_ID_RE = /^[a-z][a-z0-9-]{1,31}$/;
 export const TOOL_NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
@@ -26,6 +27,43 @@ const toolSchema = z.object({
   input_schema: jsonSchemaObject,
 });
 
+const isHttps = (v: string): boolean => {
+  try {
+    return new URL(v).protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+const httpsUrl = (what: string) => z.string().max(500).refine(isHttps, { error: `${what} 는 https:// 로 시작하는 주소여야 합니다.` });
+
+/** OAuth 권한 범위 값 (예: repo, read:user, 'repo read:org' 처럼 공백으로 여러 개) */
+const SCOPE_RE = /^[A-Za-z0-9_:./-]+(?: [A-Za-z0-9_:./-]+)*$/;
+
+/**
+ * 로그인으로 비밀값 받기: OAuth 기기 로그인(RFC 8628). 서버가 코드를 받아 화면에 보여 주고,
+ * 사용자가 그 서비스에서 허락하면 받은 토큰을 tokenEnv 설정에 암호화해 넣습니다. 주소는 permissions.net 안이어야 합니다.
+ */
+const loginSchema = z.object({
+  kind: z.literal('oauth-device', { error: "login.kind 는 'oauth-device' 여야 합니다 (OAuth 기기 로그인)." }),
+  /** 설정 화면에 보일 이름 (예: GitHub 로그인) */
+  label: z.string().min(1).max(40),
+  deviceCodeUrl: httpsUrl('login.deviceCodeUrl'),
+  tokenUrl: httpsUrl('login.tokenUrl'),
+  /** OAuth 앱의 Client ID 를 담는 env 이름 (사용자가 설정에 넣음) */
+  clientIdEnv: z.string().regex(ENV_NAME_RE, { error: 'login.clientIdEnv 는 env 이름 형식이어야 합니다.' }),
+  /** 받은 토큰을 넣을 env 이름 (secret: true 로 선언한 항목) */
+  tokenEnv: z.string().regex(ENV_NAME_RE, { error: 'login.tokenEnv 는 env 이름 형식이어야 합니다.' }),
+  /** 고를 수 있는 권한 범위 (첫 번째가 기본) */
+  scopes: z
+    .array(z.object({ value: z.string().max(200).regex(SCOPE_RE, { error: "login.scopes 의 value 는 'repo' 나 'read:user repo' 같은 권한 범위여야 합니다." }), label: z.string().min(1).max(40) }))
+    .min(1, { error: 'login.scopes 에 권한 범위를 하나 이상 적으세요.' })
+    .max(5),
+  /** 로그인한 계정 이름을 알아낼 곳 (GET · Bearer 토큰) 과 응답 JSON 의 필드 */
+  account: z.object({ url: httpsUrl('login.account.url'), field: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/) }).optional(),
+  /** 사용자가 이 앱의 권한을 거둘 수 있는 페이지. {clientId} 는 Client ID 로 바뀝니다. */
+  manageUrl: httpsUrl('login.manageUrl').optional(),
+});
+
 const envSchema = z.object({
   name: z.string().regex(ENV_NAME_RE, { error: '환경 변수 이름은 대문자로 시작하고 대문자·숫자·밑줄만 쓸 수 있습니다 (예: NOTION_TOKEN).' }),
   required: z.boolean().default(true),
@@ -38,13 +76,7 @@ const envSchema = z.object({
   url: z
     .string()
     .max(500)
-    .refine((v) => {
-      try {
-        return new URL(v).protocol === 'https:';
-      } catch {
-        return false;
-      }
-    }, { error: 'env 의 url 은 https:// 로 시작하는 주소여야 합니다 (값을 만드는 페이지).' })
+    .refine(isHttps, { error: 'env 의 url 은 https:// 로 시작하는 주소여야 합니다 (값을 만드는 페이지).' })
     .optional(),
 });
 
@@ -74,6 +106,8 @@ export const manifestSchema = z.object({
   /** 기본 제공 모듈이 처음 등록될 때 켤지 (화면 제어처럼 위험한 모듈은 false) */
   defaultEnabled: z.boolean().default(true),
   env: z.array(envSchema).max(20).default([]),
+  /** 비밀값을 붙여 넣는 대신 로그인으로 받을 수 있게 할 때 */
+  login: loginSchema.nullable().default(null),
   permissions: z
     .object({
       net: z.array(z.string().min(1).max(200)).max(50).default([]),
@@ -96,6 +130,7 @@ export const manifestSchema = z.object({
 
 export type Manifest = z.infer<typeof manifestSchema>;
 export type ManifestTool = Manifest['tools'][number];
+export type ManifestLogin = NonNullable<Manifest['login']>;
 
 function issuePath(p: readonly PropertyKey[]): string {
   return p.length === 0 ? '(최상위)' : p.map((x) => (typeof x === 'number' ? `[${x}]` : String(x))).join('.').replace(/\.\[/g, '[');
@@ -128,5 +163,28 @@ export function parseManifest(raw: unknown, source: string): Manifest {
   if (m.kind === 'skill' && m.tools.length !== 1) {
     throw new ModuleError('manifest_skill_tools', `${source}: 스킬은 도구를 정확히 하나 선언해야 합니다. 지금 ${m.tools.length}개입니다.`);
   }
+  if (m.login) checkLogin(m, m.login, source);
   return { ...m, entry };
+}
+
+/** 로그인 선언 검사: 쓰는 env 가 선언되어 있고, 토큰 칸은 비밀값이며, 접속 주소는 permissions.net 안이어야 합니다. */
+function checkLogin(m: Manifest, login: ManifestLogin, source: string): void {
+  if (m.kind === 'skill') throw new ModuleError('manifest_login_skill', `${source}: 스킬은 login 을 선언할 수 없습니다.`);
+  const env = (name: string) => m.env.find((e) => e.name === name);
+  for (const [key, name] of [['clientIdEnv', login.clientIdEnv], ['tokenEnv', login.tokenEnv]] as const) {
+    if (!env(name)) throw new ModuleError('manifest_login_env', `${source}: login.${key} 의 '${name}'이(가) env 에 선언되어 있지 않습니다.`);
+  }
+  if (login.clientIdEnv === login.tokenEnv) throw new ModuleError('manifest_login_env', `${source}: login.clientIdEnv 와 login.tokenEnv 는 서로 다른 env 여야 합니다.`);
+  if (env(login.tokenEnv)?.secret !== true) {
+    throw new ModuleError('manifest_login_secret', `${source}: login.tokenEnv '${login.tokenEnv}'는 받은 토큰을 담으므로 env 에 secret: true 로 선언해야 합니다.`);
+  }
+  const values = login.scopes.map((x) => x.value);
+  if (new Set(values).size !== values.length) throw new ModuleError('manifest_login_scope', `${source}: login.scopes 에 같은 value 가 두 번 있습니다.`);
+  const urls: [string, string][] = [['login.deviceCodeUrl', login.deviceCodeUrl], ['login.tokenUrl', login.tokenUrl], ...(login.account ? [['login.account.url', login.account.url] as [string, string]] : [])];
+  for (const [what, url] of urls) {
+    const host = new URL(url).hostname;
+    if (!m.permissions.net.some((p) => matchHost(p, host))) {
+      throw new ModuleError('manifest_login_host', `${source}: ${what} 의 ${host} 가 permissions.net 에 없습니다. 로그인도 선언한 도메인으로만 접속합니다.`);
+    }
+  }
 }

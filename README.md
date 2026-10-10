@@ -411,6 +411,17 @@ Anthropic 은 컴퓨터 사용을 최소 권한의 전용 가상 머신이나 �
 만든 토큰을 설정 화면에 붙여 넣습니다. "지켜볼 저장소"에 `owner/repo` 를 적으면 새 이슈가 올라올 때마다 연결된 에이전트가 조용히 판단합니다
 (처음 켤 때 이미 있던 이슈는 건너뜁니다. 바뀐 것이 없으면 GitHub 호출 한도를 쓰지 않는 조건부 요청으로 확인합니다).
 
+토큰을 붙여 넣는 대신 **GitHub 로그인**(OAuth 앱 기기 로그인)으로 받을 수도 있습니다. 어느 쪽을 쓸지는 사용자가 고릅니다.
+
+1. GitHub → Settings → Developer settings → OAuth Apps → New OAuth App 에서 앱을 만듭니다 (설정 화면의 "OAuth 앱 Client ID" 옆 "만들기").
+   Homepage URL 은 아무 주소나, Authorization callback URL 은 쓰지 않으므로 Homepage 와 같게 둡니다. 만든 뒤 **Enable Device Flow** 를 켭니다.
+2. 그 앱의 Client ID 를 설정 화면(또는 `.env` 의 `GITHUB_OAUTH_CLIENT_ID`)에 넣습니다. Client ID 는 비밀값이 아니고, Client secret 은 필요 없습니다.
+3. 설정 화면의 "GitHub 로그인"에서 권한 범위(비공개 저장소 포함 `repo` · 공개 저장소만 `public_repo`)를 고르고 누르면 코드가 나옵니다.
+   `github.com/login/device` 에서 그 코드를 넣고 허락하면 서버가 토큰을 받아 암호화해 넣고 모듈을 다시 시작합니다 (코드는 15분 동안 유효).
+
+로그인 토큰은 만료되지 않지만 권한이 넓습니다 (`repo` 는 계정이 쓸 수 있는 모든 비공개 저장소). 저장소를 골라 권한을 좁히려면 fine-grained 토큰을 쓰세요.
+"로그아웃"은 서버에서 토큰을 지우고, GitHub 쪽 권한은 "앱 권한 관리"(GitHub 의 Authorized OAuth Apps)에서 거둡니다.
+
 | 도구 | 하는 일 |
 |---|---|
 | `github_issue_list` · `github_issue_read` | 이슈 목록, 이슈 본문과 최근 댓글 |

@@ -45,6 +45,7 @@ async function main(): Promise<void> {
     app.scheduler.stop();
     app.manager.shutdown();
     app.approvals.shutdown();
+    app.login.shutdown();
     regexRunner.close();
     await server.close().catch(() => {});
     await app.registry.shutdown().catch(() => {});
