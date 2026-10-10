@@ -1009,7 +1009,7 @@ function AgentPanel({ agent }: { agent: AgentView }) {
   };
 
   return (
-    <aside className="card side" style={{ display: 'flex', flexDirection: 'column', gap: 18, padding: 18, animation: 'slidein .35s ease both' }} aria-label={`${agent.name} 정보`}>
+    <aside className="card side console-side scroll-fade" style={{ display: 'flex', flexDirection: 'column', gap: 18, padding: 18, animation: 'slidein .35s ease both' }} aria-label={`${agent.name} 정보`}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         <button type="button" className="btn sm" onClick={() => setEdit(true)}>
           <Icon name="user" size={14} stroke={2} />
@@ -1128,7 +1128,7 @@ function AgentConsole({ agent }: { agent: AgentView }) {
   }, [agent.id]);
 
   return (
-    <div className="row">
+    <div className="row console-row">
       <div className="grow">
         <Chat key={source} agent={agent} source={source} threads={threads} onSource={setSource} />
       </div>
