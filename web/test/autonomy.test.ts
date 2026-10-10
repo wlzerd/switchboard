@@ -9,6 +9,7 @@ import {
   intervalChoices,
   intervalLabel,
   receivesNotices,
+  reportName,
   sameHeartbeat,
   supervisorChoices,
   type HeartbeatForm,
@@ -224,5 +225,14 @@ describe('모듈 자동 알림을 받는지 (알릴 조건 칸을 하트비트�
     ['연결 없음', [], false],
   ])('%s → %s', (_label, links, expected) => {
     expect(receivesNotices({ links }, modules)).toBe(expected);
+  });
+});
+
+describe('보고 · 결과 받을 곳 표시', () => {
+  it('모듈 이름과 대상을 보이고, 모듈이 없으면 id 를 씁니다', () => {
+    const modules = [{ id: 'telegram', name: 'Telegram' }];
+    expect(reportName({ moduleId: 'telegram', target: '123456789' }, modules)).toBe('Telegram 123456789');
+    expect(reportName({ moduleId: 'gone', target: '#ops' }, modules)).toBe('gone #ops');
+    expect(reportName({ moduleId: 'telegram', target: '1' }, undefined)).toBe('telegram 1');
   });
 });

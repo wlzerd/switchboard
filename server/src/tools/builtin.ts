@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { reportLabel } from '../agents/autonomy.ts';
 import type { Config } from '../config/env.ts';
-import type { AgentRow, Store } from '../db/store.ts';
+import type { AgentRow, ReportTarget, Store } from '../db/store.ts';
 import { ValidationError } from '../errors.ts';
 import { displayPath, isInsidePath, resolveToolPath } from '../permissions/folders.ts';
 import { hostEntryMatches, isExactEntry } from '../permissions/policy.ts';
@@ -23,10 +24,28 @@ export interface SkillInput {
   tests: { input: Record<string, unknown>; expectIncludes?: string }[];
 }
 
+/** 예약 고치기: 적은 항목만 바꿉니다. reply 는 실제 대상으로 푼 값 (null 이면 웹 화면에만). */
+export interface ScheduleChange {
+  spec?: string;
+  prompt?: string;
+  enabled?: boolean;
+  reply?: ToolEnv['reply'];
+}
+
 export interface ScheduleApi {
   create(agent: AgentRow, spec: string, prompt: string, reply: ToolEnv['reply']): string;
-  list(agent: AgentRow): string;
+  /** id 를 주면 그 예약 하나를 할 일 전체와 함께 보여 줍니다. */
+  list(agent: AgentRow, id?: string): string;
+  update(agent: AgentRow, id: string, change: ScheduleChange): string;
   cancel(agent: AgentRow, id: string): string;
+}
+
+/** 에이전트가 고른 보고 · 결과 받을 곳(report_to)을 푼 값 */
+export interface ResolvedReport {
+  /** null 이면 채널로 보내지 않고 웹 화면에만 */
+  to: ReportTarget | null;
+  /** 그곳으로 보낼 때마다 승인이 필요하면 그 이유 */
+  ask: string | null;
 }
 
 export interface DelegateInput {
@@ -41,6 +60,8 @@ export interface HeartbeatToolInput {
   checklist?: string;
   /** 'HH:MM-HH:MM' · 빈 문자열이면 하루 종일 */
   activeHours?: string;
+  /** 고른 보고 받을 곳. 없으면 정해 둔 곳을 쓰고, 정해 둔 곳도 없으면 지금 대화한 채널 */
+  report?: ResolvedReport;
 }
 
 export interface ProjectApi {
@@ -59,6 +80,8 @@ export interface ToolServices {
   schedules: ScheduleApi;
   delegate: (agent: AgentRow, env: ToolEnv, input: DelegateInput) => Promise<string>;
   heartbeat: (agent: AgentRow, env: ToolEnv, input: HeartbeatToolInput) => string;
+  /** report_to 글을 실제 보낼 곳으로 풉니다. 고를 수 없는 곳이면 이유와 함께 예외를 던집니다. */
+  resolveReport: (agent: AgentRow, env: ToolEnv, raw: string) => ResolvedReport;
   projects: ProjectApi;
 }
 
@@ -78,6 +101,21 @@ const rel = (env: ToolEnv, abs: string): string => (isInsidePath(env.workspace, 
 function str(input: Record<string, unknown>, key: string): string {
   const v = input[key];
   return typeof v === 'string' ? v : '';
+}
+
+/** 보고 · 결과 받을 곳 (heartbeat_set · schedule_create · schedule_update 공통). 채널 id(32자) + ':' + 대상(200자) */
+const reportToSchema = (description: string): Record<string, unknown> => ({ type: 'string', minLength: 1, maxLength: 240, description });
+
+/** report_to 를 적었으면 푼 값을, 안 적었으면 null. 고를 수 없는 곳이면 승인을 묻기 전에 이유를 알립니다. */
+function reportOf(s: ToolServices, input: Record<string, unknown>, env: ToolEnv): ResolvedReport | null {
+  return typeof input['report_to'] === 'string' ? s.resolveReport(env.agent, env, input['report_to']) : null;
+}
+
+const reportName = (s: ToolServices, r: ResolvedReport): string => reportLabel(r.to, (id) => s.store.findModule(id)?.manifest.name);
+
+/** 보낼 때마다 승인이 필요한 곳을 골랐으면 결과 끝에 알립니다. */
+function withAskNote(text: string, r: ResolvedReport | null): string {
+  return r?.ask ? `${text}\n주의: 그곳으로 보낼 때마다 사용자의 승인이 필요합니다 (${r.ask})` : text;
 }
 
 /* ───────── 파일 ───────── */
@@ -523,7 +561,7 @@ const heartbeatSet = (s: ToolServices): BuiltinTool => ({
   description:
     '무엇을 확인하고 어떤 경우에 알릴지(점검 · 알릴 조건)와, 정해진 간격으로 스스로 점검하는 하트비트를 정합니다. 사용자가 "변화가 생기면 알려줘", "중요한 메일이 오면 알려줘"처럼 지켜봐 달라고 할 때 씁니다. ' +
     '메일처럼 연결된 모듈이 새 소식을 직접 보내 주는 일은 enabled=false 로 조건만 적고, 스스로 주기적으로 확인해야 하는 일(웹 페이지 · 서버 상태 등)은 enabled=true 와 every_minutes 로 켭니다. ' +
-    '알릴 것이 없으면 조용히 있고, 알릴 것이 있을 때만 보고합니다. 보고 받을 곳이 정해져 있지 않으면 지금 대화한 채널로 보고합니다.',
+    '알릴 것이 없으면 조용히 있고, 알릴 것이 있을 때만 보고합니다. 보고 받을 곳은 report_to 로 고르고, 안 고르면 정해 둔 곳(없으면 지금 대화한 곳)으로 보고합니다.',
   input_schema: {
     type: 'object',
     properties: {
@@ -531,21 +569,27 @@ const heartbeatSet = (s: ToolServices): BuiltinTool => ({
       every_minutes: { type: 'integer', minimum: 1, maximum: 1440, description: '확인 간격(분)' },
       checklist: { type: 'string', maxLength: 4000, description: '확인할 것과 알릴 조건 (예: 결제 · 계약 · 장애 관련 메일이 오면 알린다). 하트비트와 모듈 자동 알림 모두 이 조건으로 판단합니다' },
       active_hours: { type: 'string', maxLength: 20, description: "확인할 시간대 'HH:MM-HH:MM' (서버 시간대). 빈 문자열이면 하루 종일" },
+      report_to: reportToSchema("보고 받을 곳: 'here' 지금 대화한 곳 · 'web' 채널로 보내지 않고 웹 화면에만 · '<channel id>:<대상>' 연결된 채널의 대상 (예: discord:#alerts, telegram:123456789). 하트비트와 모듈 자동 알림의 보고가 모두 이리로 갑니다"),
     },
     required: ['enabled'],
     additionalProperties: false,
   },
-  describe(input): Described {
+  describe(input, env): Described {
     const every = typeof input['every_minutes'] === 'number' ? `${input['every_minutes']}분마다` : '간격 유지';
-    return { permission: 'heartbeat.manage', target: 'heartbeat', text: str(input, 'checklist'), summary: input['enabled'] === true ? `켜기 · ${every}` : '끄기' };
+    const report = reportOf(s, input, env);
+    const summary = `${input['enabled'] === true ? `켜기 · ${every}` : '끄기'}${report ? ` · 보고 → ${reportName(s, report)}` : ''}`;
+    return { permission: 'heartbeat.manage', target: 'heartbeat', text: str(input, 'checklist'), summary };
   },
   async run(input, env) {
-    return s.heartbeat(env.agent, env, {
+    const report = reportOf(s, input, env);
+    const out = s.heartbeat(env.agent, env, {
       enabled: input['enabled'] === true,
       ...(typeof input['every_minutes'] === 'number' ? { everyMinutes: input['every_minutes'] } : {}),
       ...(typeof input['checklist'] === 'string' ? { checklist: input['checklist'] } : {}),
       ...(typeof input['active_hours'] === 'string' ? { activeHours: input['active_hours'] } : {}),
+      ...(report ? { report } : {}),
     });
+    return withAskNote(out, report);
   },
 });
 
@@ -604,41 +648,91 @@ const projectUntrack = (s: ToolServices): BuiltinTool => ({
 
 /* ───────── 예약 ───────── */
 
+const SPEC_FORMS = 'every 30m · daily 09:00 · weekdays 09:00 · weekly mon 09:00 (서버 시간대)';
+
 const scheduleCreate = (s: ToolServices): BuiltinTool => ({
   name: 'schedule_create',
   title: '예약 만들기',
-  description: '정해진 시각에 스스로 작업을 시작하도록 예약합니다. spec 형식: every 30m · daily 09:00 · weekdays 09:00 · weekly mon 09:00 (서버 시간대). 결과는 지금 대화한 채널로 보냅니다.',
+  description: `정해진 시각에 스스로 작업을 시작하도록 예약합니다. spec 형식: ${SPEC_FORMS}. 결과는 report_to 로 고른 곳, 안 고르면 지금 대화한 곳으로 보냅니다.`,
   input_schema: {
     type: 'object',
-    properties: { spec: { type: 'string', minLength: 1, maxLength: 40 }, prompt: { type: 'string', minLength: 1, maxLength: 2000 } },
+    properties: {
+      spec: { type: 'string', minLength: 1, maxLength: 40 },
+      prompt: { type: 'string', minLength: 1, maxLength: 2000 },
+      report_to: reportToSchema("결과 받을 곳: 'here' 지금 대화한 곳(기본) · 'web' 웹 화면에만 · '<channel id>:<대상>' (예: discord:#daily)"),
+    },
     required: ['spec', 'prompt'],
     additionalProperties: false,
   },
-  describe(input): Described {
-    return { permission: 'schedule.create', target: str(input, 'spec'), summary: `${str(input, 'spec')} · ${str(input, 'prompt').slice(0, 40)}` };
+  describe(input, env): Described {
+    const report = reportOf(s, input, env);
+    return { permission: 'schedule.create', target: str(input, 'spec'), summary: `${str(input, 'spec')} · ${str(input, 'prompt').slice(0, 40)}${report ? ` · 결과 → ${reportName(s, report)}` : ''}` };
   },
   async run(input, env) {
-    return s.schedules.create(env.agent, str(input, 'spec'), str(input, 'prompt'), env.reply);
+    const report = reportOf(s, input, env);
+    return withAskNote(s.schedules.create(env.agent, str(input, 'spec'), str(input, 'prompt'), report ? report.to : env.reply), report);
   },
 });
 
 const scheduleList = (s: ToolServices): BuiltinTool => ({
   name: 'schedule_list',
   title: '예약 목록',
-  description: '자신의 예약 실행 목록을 봅니다.',
-  input_schema: { type: 'object', properties: {}, additionalProperties: false },
-  describe(): Described {
-    return { permission: null, target: null, summary: '예약 목록' };
+  description: '자신의 예약 실행 목록을 봅니다. id 를 넣으면 그 예약의 할 일(prompt) 전체를 보여 줍니다.',
+  input_schema: { type: 'object', properties: { id: { type: 'string', minLength: 1, maxLength: 64 } }, additionalProperties: false },
+  describe(input): Described {
+    return { permission: null, target: null, summary: str(input, 'id') ? `예약 ${str(input, 'id')}` : '예약 목록' };
   },
-  async run(_input, env) {
-    return s.schedules.list(env.agent);
+  async run(input, env) {
+    return s.schedules.list(env.agent, str(input, 'id') || undefined);
+  },
+});
+
+const scheduleUpdate = (s: ToolServices): BuiltinTool => ({
+  name: 'schedule_update',
+  title: '예약 고치기',
+  description:
+    '자신의 예약 하나를 고칩니다. 적은 항목만 바뀌고 나머지는 그대로입니다. 지우고 다시 만들지 말고 이 도구로 고치세요. ' +
+    '잠시 멈출 때는 enabled=false 로 끄고(지우지 않음), 다시 켤 때는 enabled=true 입니다. 규칙(spec)을 바꾸거나 다시 켜면 지금부터 다음 실행 시각을 셉니다. ' +
+    'prompt 는 통째로 바뀌므로 일부만 고칠 때는 schedule_list 에 id 를 넣어 전체를 보고 고친 전문을 넣으세요.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', minLength: 1, maxLength: 64, description: 'schedule_list 에 나오는 예약 id' },
+      spec: { type: 'string', minLength: 1, maxLength: 40, description: `새 규칙: ${SPEC_FORMS}` },
+      prompt: { type: 'string', minLength: 1, maxLength: 2000, description: '새로 할 일 (전체를 바꿉니다)' },
+      enabled: { type: 'boolean', description: 'false 면 지우지 않고 끄고, true 면 다시 켭니다' },
+      report_to: reportToSchema("결과 받을 곳: 'here' 지금 대화한 곳 · 'web' 웹 화면에만 · '<channel id>:<대상>' (예: discord:#daily)"),
+    },
+    required: ['id'],
+    additionalProperties: false,
+  },
+  describe(input, env): Described {
+    const report = reportOf(s, input, env);
+    const changes = [
+      ...(typeof input['spec'] === 'string' ? [`규칙 ${input['spec']}`] : []),
+      ...(typeof input['prompt'] === 'string' ? ['할 일'] : []),
+      ...(typeof input['enabled'] === 'boolean' ? [input['enabled'] ? '켜기' : '끄기'] : []),
+      ...(report ? [`결과 → ${reportName(s, report)}`] : []),
+    ];
+    if (changes.length === 0) throw new ValidationError('schedule_no_change', '바꿀 항목(spec · prompt · enabled · report_to)을 하나 이상 적으세요.');
+    return { permission: 'schedule.create', target: str(input, 'id'), text: str(input, 'prompt'), summary: `예약 ${str(input, 'id')} · ${changes.join(' · ')}` };
+  },
+  async run(input, env) {
+    const report = reportOf(s, input, env);
+    const out = s.schedules.update(env.agent, str(input, 'id'), {
+      ...(typeof input['spec'] === 'string' ? { spec: input['spec'] } : {}),
+      ...(typeof input['prompt'] === 'string' ? { prompt: input['prompt'] } : {}),
+      ...(typeof input['enabled'] === 'boolean' ? { enabled: input['enabled'] } : {}),
+      ...(report ? { reply: report.to } : {}),
+    });
+    return withAskNote(out, report);
   },
 });
 
 const scheduleCancel = (s: ToolServices): BuiltinTool => ({
   name: 'schedule_cancel',
   title: '예약 취소',
-  description: '자신의 예약 하나를 지웁니다. id 는 schedule_list 에서 확인합니다.',
+  description: '자신의 예약 하나를 아주 지웁니다. 잠시 멈추거나 고칠 때는 지우지 말고 schedule_update 를 쓰세요. id 는 schedule_list 에서 확인합니다.',
   input_schema: { type: 'object', properties: { id: { type: 'string', minLength: 1 } }, required: ['id'], additionalProperties: false },
   describe(input): Described {
     return { permission: 'schedule.create', target: str(input, 'id'), summary: `예약 ${str(input, 'id')} 취소` };
@@ -649,7 +743,7 @@ const scheduleCancel = (s: ToolServices): BuiltinTool => ({
 });
 
 export function builtinTools(s: ToolServices): BuiltinTool[] {
-  return [fsRead(s), fsWrite(), fsList(), shellExec(s), httpRequest(s), sendMessage(s), skillCreate(s), moduleCreate(s), scheduleCreate(s), scheduleList(s), scheduleCancel(s), delegateTask(s), heartbeatSet(s), projectTrack(s), projectUntrack(s)];
+  return [fsRead(s), fsWrite(), fsList(), shellExec(s), httpRequest(s), sendMessage(s), skillCreate(s), moduleCreate(s), scheduleCreate(s), scheduleList(s), scheduleUpdate(s), scheduleCancel(s), delegateTask(s), heartbeatSet(s), projectTrack(s), projectUntrack(s)];
 }
 
 /** 이 도구들을 쓰려면 어떤 권한이 하나라도 허용/확인이어야 하는지 (모두 차단이면 목록에서 뺍니다). */
@@ -662,6 +756,7 @@ export const TOOL_PERMISSION: Record<string, string[]> = {
   skill_create: ['skill.create'],
   module_create: ['module.create'],
   schedule_create: ['schedule.create'],
+  schedule_update: ['schedule.create'],
   schedule_cancel: ['schedule.create'],
   schedule_list: [],
   send_message: [],

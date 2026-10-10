@@ -9,7 +9,7 @@ import { api, errorText } from '../lib/api';
 import { attachmentsOf, DEFAULT_LIMITS, totalError } from '../lib/attachments';
 import { readDraft, writeDraft } from '../lib/drafts';
 import { MODE_LABEL } from '../lib/folders';
-import { delegationChips, intervalLabel } from '../lib/autonomy';
+import { delegationChips, intervalLabel, reportName } from '../lib/autonomy';
 import { clock, relTime } from '../lib/format';
 import { navigate } from '../lib/router';
 import { onServerEvent, refreshOverview, toast, useApp } from '../lib/store';
@@ -146,6 +146,7 @@ const TOOL_ICON: Record<string, string> = {
   module_create: 'cube',
   schedule_create: 'clock',
   schedule_list: 'clock',
+  schedule_update: 'clock',
   schedule_cancel: 'clock',
   delegate_task: 'forward',
   heartbeat_set: 'pulse',
@@ -833,6 +834,7 @@ function Chat({ agent, source, threads, onSource }: { agent: AgentView; source: 
 
 function Schedules({ agentId }: { agentId: string }) {
   const tz = useApp((s) => s.meta?.tz ?? 'UTC');
+  const modules = useApp((s) => s.overview?.modules);
   const [list, setList] = useState<ScheduleView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -908,6 +910,7 @@ function Schedules({ agentId }: { agentId: string }) {
           <span className="muted" style={{ fontSize: 11.5 }}>
             {s.enabled && s.nextRun ? `다음 ${new Intl.DateTimeFormat('ko-KR', { timeZone: tz, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(s.nextRun))}` : '꺼짐'}
             {s.lastRun ? ` · 마지막 ${relTime(s.lastRun)}` : ''}
+            {s.reply ? ` · → ${reportName(s.reply, modules)}` : ''}
           </span>
           {s.skipped > 0 ? (
             <span className="chip warn" style={{ alignSelf: 'flex-start' }} title={s.lastSkippedAt ? `마지막으로 건너뜀 ${relTime(s.lastSkippedAt)} · 이전 실행이 안 끝났거나 일시정지 중` : undefined}>
@@ -923,6 +926,7 @@ function Schedules({ agentId }: { agentId: string }) {
 /** 하트비트 · 보고 받을 곳. 조용한 작업(하트비트 · 새 메일 같은 자동 알림)의 보고가 이리로 갑니다. */
 /** 하트비트 상태와 '지금 확인'. 켜고 끄기 · 간격 · 조건은 에이전트 설정 창에서 정합니다. */
 function HeartbeatStatus({ agent }: { agent: AgentView }) {
+  const modules = useApp((s) => s.overview?.modules);
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
 
@@ -972,6 +976,12 @@ function HeartbeatStatus({ agent }: { agent: AgentView }) {
           <span className="chips">
             <span className="chip">{intervalLabel(hb.everyMinutes)}마다</span>
             <span className="chip mono">{hb.activeHours ?? '하루 종일'}</span>
+            {agent.report ? (
+              <span className="chip" title="보고 받을 곳" style={{ maxWidth: '100%' }}>
+                <Icon name="report" size={12} stroke={2.2} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{reportName(agent.report, modules)}</span>
+              </span>
+            ) : null}
           </span>
           <button type="button" className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy || checking} onClick={() => void run()}>
             {busy || checking ? <span className="spinner" style={{ width: 12, height: 12 }} /> : <Icon name="pulse" size={13} stroke={2.2} />}

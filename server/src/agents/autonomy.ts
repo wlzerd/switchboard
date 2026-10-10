@@ -84,6 +84,40 @@ export function heartbeatDue(hb: HeartbeatSettings | null, lastAt: number | null
   return now - lastAt >= hb.everyMinutes * 60_000;
 }
 
+/** 에이전트가 도구(report_to)로 고르는 보고 · 결과 받을 곳 */
+export type ReportChoice = { kind: 'here' } | { kind: 'web' } | { kind: 'channel'; moduleId: string; target: string };
+
+export const REPORT_TARGET_MAX = 200;
+const REPORT_TO_FORMS = "'here'(지금 대화한 곳) · 'web'(채널로 보내지 않고 웹 화면에만) · '<channel id>:<대상>'(예: discord:#alerts)";
+
+/**
+ * report_to 글 해석. 채널 id 는 첫 ':' 앞까지라 대상에 ':' 가 들어가도 됩니다.
+ * 그 채널이 이 에이전트에 연결되어 있고 보낼 수 있는지는 AgentManager 가 확인합니다.
+ */
+export function parseReportChoice(raw: string): ReportChoice {
+  const text = raw.trim();
+  const word = text.toLowerCase();
+  if (word === 'here') return { kind: 'here' };
+  if (word === 'web') return { kind: 'web' };
+  const at = text.indexOf(':');
+  if (at === -1) throw new ValidationError('report_to_format', `보고 받을 곳은 ${REPORT_TO_FORMS} 중 하나로 적습니다. 받은 값: '${text.slice(0, 60)}'`);
+  const moduleId = text.slice(0, at).trim().toLowerCase();
+  const target = text.slice(at + 1).trim();
+  if (moduleId === '') throw new ValidationError('report_to_channel', `':' 앞에 채널 id 를 적으세요 (예: discord:#alerts). 받은 값: '${text.slice(0, 60)}'`);
+  if (target === '') throw new ValidationError('report_to_target', `'${moduleId}:' 뒤에 보낼 대상(채널 이름이나 대화 id)을 적으세요 (예: ${moduleId}:#alerts).`);
+  if (target.length > REPORT_TARGET_MAX) throw new ValidationError('report_target_long', `대상은 ${REPORT_TARGET_MAX}자까지 쓸 수 있습니다. 지금 ${target.length}자입니다.`);
+  return { kind: 'channel', moduleId, target };
+}
+
+export function sameReportTarget(a: ReportTarget | null, b: ReportTarget | null): boolean {
+  return (a?.moduleId ?? null) === (b?.moduleId ?? null) && (a?.target ?? null) === (b?.target ?? null);
+}
+
+/** 보고 받을 곳을 사람이 읽는 글로 (예: 'Telegram 12345', 없으면 '웹 화면') */
+export function reportLabel(to: ReportTarget | null, nameOf: (moduleId: string) => string | undefined): string {
+  return to ? `${nameOf(to.moduleId) ?? to.moduleId} ${to.target}` : '웹 화면';
+}
+
 /** 보고 받을 곳의 모양 검사 (모듈이 실제로 보낼 수 있는지는 AgentManager 가 확인). */
 export function parseReportTarget(raw: unknown): ReportTarget | null {
   if (raw === null || raw === undefined) return null;
@@ -93,7 +127,7 @@ export function parseReportTarget(raw: unknown): ReportTarget | null {
   const target = typeof r['target'] === 'string' ? r['target'].trim() : '';
   if (moduleId === '') throw new ValidationError('report_module', '보고를 보낼 채널 모듈을 고르세요.');
   if (target === '') throw new ValidationError('report_target', '보고를 보낼 대상(채널 이름이나 대화 id)을 적으세요.');
-  if (target.length > 200) throw new ValidationError('report_target_long', `대상은 200자까지 쓸 수 있습니다. 지금 ${target.length}자입니다.`);
+  if (target.length > REPORT_TARGET_MAX) throw new ValidationError('report_target_long', `대상은 ${REPORT_TARGET_MAX}자까지 쓸 수 있습니다. 지금 ${target.length}자입니다.`);
   return { moduleId, target };
 }
 

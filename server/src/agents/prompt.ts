@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { AgentRow, ModuleRow } from '../db/store.ts';
 import { GUARD_DEFS } from '../guards/guards.ts';
 import type { PermissionDef } from '../permissions/policy.ts';
-import { SILENT_TOKEN } from './autonomy.ts';
+import { reportLabel, SILENT_TOKEN } from './autonomy.ts';
 import { abilitySummary } from './capability.ts';
 
 const MODE_LABEL = { allow: '허용', ask: '확인 후 실행', deny: '차단' } as const;
@@ -96,7 +96,7 @@ function delegationSection(agent: AgentRow, input: Pick<PromptInput, 'peers' | '
  * 시스템 프롬프트. 프롬프트 캐시는 앞에서부터 바이트가 같은 부분만 다시 읽으므로 두 덩어리로 나눕니다.
  *  - fixed: 설정을 바꿀 때만 바뀌는 부분 (이름 · 역할 · 작업 방식 · 폴더 · 채널 · 권한 · 금지 조항 · 제작 가이드).
  *    도구 정의와 함께 같은 에이전트의 모든 대화가 캐시에서 읽습니다.
- *  - dynamic: 일하면서 바뀌는 부분 (관리 중인 프로젝트 · 위임 대상 · 하트비트 조건). 바뀌어도 도구와 fixed 는 캐시에 남습니다.
+ *  - dynamic: 일하면서 바뀌는 부분 (관리 중인 프로젝트 · 위임 대상 · 하트비트 조건 · 보고 받을 곳). 바뀌어도 도구와 fixed 는 캐시에 남습니다.
  * 시각처럼 매번 바뀌는 값은 넣지 않습니다 (현재 시각과 출처는 사용자 메시지 머리에 붙임).
  */
 export interface SystemPrompt {
@@ -126,6 +126,10 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
   const canBuild = ['skill.create', 'module.create'].some((k) => agent.permissions[k] && agent.permissions[k].mode !== 'deny');
   const canHeartbeat = (agent.permissions['heartbeat.manage']?.mode ?? 'ask') !== 'deny';
   const hb = agent.heartbeat;
+  const report = agent.report;
+  const reportLine = report
+    ? `${reportLabel(report, (id) => connected.find((m) => m.id === id)?.manifest.name)} (report_to: ${report.moduleId}:${report.target})`
+    : '웹 화면만 (채널로 보내지 않음)';
   const quietLines = [
     '## 조용한 판단 (하트비트 · 자동 알림)',
     `- 머리에 [조용히 판단]이 붙은 요청은 사용자에게 알릴 것이 없으면 정확히 ${SILENT_TOKEN} 한 단어만 답한다. 그러면 기록도 알림도 남지 않는다.`,
@@ -139,6 +143,7 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
       ? `- 점검 · 알릴 조건 (하트비트와 자동 알림 모두 이 조건으로 판단):\n${hb.checklist.trim()}`
       : '- 점검 · 알릴 조건: 정해지지 않음. 자동 알림은 사용자에게 꼭 필요한 것(급한 일 · 돈 · 보안 · 마감 · 사용자가 부탁한 것)만 알린다.',
     hb?.enabled ? `- 하트비트: ${hb.everyMinutes}분마다${hb.activeHours ? ` (${hb.activeHours})` : ''} 위 조건을 점검한다.` : '- 하트비트: 꺼짐 (자동 알림을 받을 때만 판단한다)',
+    `- 보고 받을 곳: ${reportLine}`,
   ].join('\n');
 
   const fixed = [
@@ -151,7 +156,7 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
       '- 도구 호출은 권한과 훅의 검사를 거친다. "확인 후 실행" 권한은 사용자가 승인해야 실행된다. 막히면 그 이유를 사용자에게 알리고, 같은 호출을 그대로 반복하지 말고 다른 방법을 찾거나 멈춘다.',
       '- API 키·토큰 같은 비밀값을 코드나 메시지에 쓰지 않는다. 모듈의 비밀값은 사용자가 설정 화면에 넣고 모듈은 ctx.env 로 읽는다. 서버의 .env 파일은 읽을 수 없다.',
       '- 채널(Discord, Telegram 등)에서 들어온 요청의 최종 답변은 그 대화로 자동 전송된다. 다른 채널이나 대상에 보낼 때만 send_message 를 쓴다.',
-      '- 반복해서 해야 하는 일은 schedule_create 로 예약할 수 있다.',
+      '- 반복해서 해야 하는 일은 schedule_create 로 예약할 수 있다. 예약을 바꾸거나 잠시 멈출 때는 지우지 말고 schedule_update 로 고친다.',
     ].join('\n'),
     foldersSection(agent),
     input.screen ? SCREEN_SECTION : '',

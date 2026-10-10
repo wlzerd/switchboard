@@ -137,6 +137,11 @@ export function receivesNotices(agent: Pick<AgentView, 'links'>, modules: readon
   });
 }
 
+/** 보고 · 결과 받을 곳을 화면에 보일 글로 (모듈 이름 + 대상). 모듈이 지워졌으면 id 를 씁니다. */
+export function reportName(r: ReportTarget, modules: readonly Pick<ModuleView, 'id' | 'name'>[] | undefined): string {
+  return `${modules?.find((m) => m.id === r.moduleId)?.name ?? r.moduleId} ${r.target}`;
+}
+
 /** 저장된 설정과 화면 값이 같은지 (저장 버튼 상태) */
 export function sameHeartbeat(a: HeartbeatForm, b: HeartbeatForm): boolean {
   const pa = heartbeatPayload(a);

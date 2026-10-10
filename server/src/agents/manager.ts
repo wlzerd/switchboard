@@ -24,7 +24,7 @@ import { addAlways, BASE_PERMISSIONS, evaluatePermission, messagePermission, val
 import type { ProjectService } from '../projects/service.ts';
 import type { SchedulerService } from '../scheduler/service.ts';
 import type { SettingsService } from '../settings/service.ts';
-import { builtinTools, type DelegateInput, type HeartbeatToolInput, type SkillInput, type ToolServices } from '../tools/builtin.ts';
+import { builtinTools, type DelegateInput, type HeartbeatToolInput, type ResolvedReport, type SkillInput, type ToolServices } from '../tools/builtin.ts';
 import type { ToolEnv } from '../tools/types.ts';
 import {
   delegationProblem,
@@ -32,8 +32,11 @@ import {
   delegationResultText,
   heartbeatDue,
   heartbeatPrompt,
+  parseReportChoice,
   parseReportTarget,
   quietPreamble,
+  reportLabel,
+  sameReportTarget,
   validateDelegation,
   validateHeartbeat,
 } from './autonomy.ts';
@@ -142,6 +145,7 @@ export class AgentManager {
       schedules: deps.scheduler,
       delegate: (agent, env, input) => this.delegate(agent, env, input),
       heartbeat: (agent, env, input) => this.setHeartbeatFromTool(agent, env, input),
+      resolveReport: (agent, env, raw) => this.resolveReport(agent, env, raw),
       projects: {
         track: (env, abs, input) => {
           const task = this.d.store.findTask(env.taskId);
@@ -516,8 +520,45 @@ export class AgentManager {
     if (Boolean(cur.heartbeat?.enabled) !== Boolean(hb?.enabled) || restart) {
       this.d.bus.activity({ type: 'agent.heartbeat', category: 'agent', tone: 'pass', who: row.name, text: hb?.enabled ? `하트비트 켬 · ${hb.everyMinutes}분마다${hb.activeHours ? ` (${hb.activeHours})` : ''}` : '하트비트 끔', agentId: id });
     }
+    if (!sameReportTarget(cur.report, report)) {
+      this.d.bus.activity({ type: 'agent.report_to', category: 'agent', tone: 'pass', who: row.name, text: `보고 받을 곳 · ${this.reportName(report)}`, agentId: id });
+    }
     this.d.bus.emit({ type: 'graph.changed' });
     return row;
+  }
+
+  private reportName(to: ReportTarget | null): string {
+    return reportLabel(to, (id) => this.d.store.findModule(id)?.manifest.name);
+  }
+
+  /**
+   * report_to(에이전트가 고른 보고 · 결과 받을 곳)를 실제 대상으로 풉니다. to 가 null 이면 웹 화면에만.
+   * 채널은 이 에이전트에 연결된, 보낼 수 있는 채널이어야 하고 그 대상으로 보내는 권한이 차단이 아니어야 합니다.
+   */
+  resolveReport(agent: AgentRow, env: ToolEnv, raw: string): ResolvedReport {
+    const choice = parseReportChoice(raw);
+    if (choice.kind === 'web') return { to: null, ask: null };
+    if (choice.kind === 'channel') return this.reportChannel(agent, choice.moduleId, choice.target);
+    if (env.quiet) throw new ValidationError('report_here_quiet', "조용한 판단(하트비트 · 자동 알림) 중에는 지금 대화한 곳(here)이 없습니다. '<channel id>:<대상>'이나 'web'으로 적으세요.");
+    if (env.delegation) throw new ValidationError('report_here_delegated', "다른 에이전트가 맡긴 일이라 지금 대화한 곳(here)으로는 보낼 수 없습니다. '<channel id>:<대상>'이나 'web'으로 적으세요.");
+    // 웹 콘솔에서 부탁받았으면 웹 화면입니다.
+    return env.reply ? this.reportChannel(agent, env.reply.moduleId, env.reply.target) : { to: null, ask: null };
+  }
+
+  private reportChannel(agent: AgentRow, moduleId: string, target: string): ResolvedReport {
+    const linked = this.d.store
+      .listAgentModules(agent.id)
+      .map((l) => this.d.store.findModule(l.moduleId))
+      .filter((m): m is ModuleRow => m !== null && m.manifest.channel !== null);
+    const senders = linked.filter((m) => m.manifest.channel?.send !== false).map((m) => m.id);
+    const choices = senders.length > 0 ? `보낼 수 있는 채널: ${senders.join(', ')}` : "이 에이전트에 연결된 채널 중 보낼 수 있는 것이 없어 'web'만 고를 수 있습니다";
+    const mod = linked.find((m) => m.id === moduleId);
+    if (!mod) throw new ValidationError('report_channel', `'${moduleId}'은(는) 이 에이전트에 연결된 채널이 아닙니다. ${choices}.`);
+    if (mod.manifest.channel?.send === false) throw new ValidationError('report_module_cannot_send', `'${mod.manifest.name}'은(는) 받기만 하는 채널이라 그리로는 보낼 수 없습니다. ${choices}.`);
+    const def = this.permissionDefs().find((x) => x.key === `msg.${moduleId}`) ?? messagePermission(moduleId, mod.manifest.name);
+    const decision = evaluatePermission(def, agent.permissions[def.key], target);
+    if (decision.decision === 'deny') throw new PermissionDeniedError('report_denied', `${decision.reason} 그곳으로는 보낼 수 없습니다.`);
+    return { to: { moduleId, target }, ask: decision.decision === 'ask' ? decision.reason : null };
   }
 
   /** heartbeat_set 도구: 에이전트가 사용자의 "지켜보다가 알려줘" 요청을 하트비트로 등록합니다. */
@@ -529,11 +570,11 @@ export class AgentManager {
       activeHours: input.activeHours === undefined ? (cur?.activeHours ?? null) : input.activeHours || null,
       checklist: input.checklist ?? cur?.checklist ?? '',
     };
-    // 보고 받을 곳이 없으면 지금 대화한 채널로 보냅니다.
-    const report = agent.report ?? (env.reply && this.d.store.findModule(env.reply.moduleId)?.manifest.channel?.send !== false ? env.reply : null);
+    // 보고 받을 곳: 고른 곳 → 정해 둔 곳 → 지금 대화한 채널 순서로 정합니다.
+    const report = input.report ? input.report.to : (agent.report ?? (env.reply && this.d.store.findModule(env.reply.moduleId)?.manifest.channel?.send !== false ? env.reply : null));
     const row = this.setAutonomy(agent.id, merged, report);
     const hb = row.heartbeat;
-    const where = row.report ? `${this.d.store.findModule(row.report.moduleId)?.manifest.name ?? row.report.moduleId} ${row.report.target}` : '웹 화면';
+    const where = this.reportName(row.report);
     if (!hb?.enabled) {
       return hb?.checklist
         ? `알릴 조건을 저장했습니다 · 보고 받을 곳: ${where}. 하트비트(주기 점검)는 꺼져 있어, 연결된 모듈의 자동 알림(새 메일 등)을 받을 때 이 조건으로 판단합니다.`

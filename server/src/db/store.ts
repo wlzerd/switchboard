@@ -895,6 +895,13 @@ export class Store {
   setScheduleEnabled(id: string, enabled: boolean, nextRun: number | null): void {
     this.db.run('UPDATE schedules SET enabled = :enabled, next_run = :nextRun WHERE id = :id', { id, enabled: enabled ? 1 : 0, nextRun });
   }
+  updateSchedule(id: string, s: Pick<ScheduleRow, 'spec' | 'prompt' | 'reply' | 'enabled' | 'nextRun'>): ScheduleRow {
+    const r = this.db.run('UPDATE schedules SET spec = :spec, prompt = :prompt, reply = :reply, enabled = :enabled, next_run = :nextRun WHERE id = :id', {
+      id, spec: s.spec, prompt: s.prompt, reply: s.reply ? JSON.stringify(s.reply) : null, enabled: s.enabled ? 1 : 0, nextRun: s.nextRun,
+    });
+    if (r.changes === 0) throw new NotFoundError('예약', id);
+    return this.getSchedule(id);
+  }
   deleteSchedule(id: string): void {
     const r = this.db.run('DELETE FROM schedules WHERE id = :id', { id });
     if (r.changes === 0) throw new NotFoundError('예약', id);
