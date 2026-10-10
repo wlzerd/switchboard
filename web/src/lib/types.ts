@@ -194,8 +194,10 @@ export interface LoginView {
   ready: boolean;
   /** 이 앱의 권한을 거둘 수 있는 페이지 */
   manageUrl: string | null;
-  /** 지금 토큰이 로그인으로 받은 것일 때 */
-  current: { account: string | null; scope: string; at: number } | null;
+  /** 지금 토큰이 로그인으로 받은 것일 때 (via: 화면에서 기기 로그인 · 서버 CLI 에서 가져옴) */
+  current: { account: string | null; scope: string; at: number; via: 'device' | 'cli' } | null;
+  /** 서버 CLI 로그인 가져오기 (예: gh auth login 해 둔 토큰) */
+  cli: { label: string; command: string; loginCommand: string; installUrl: string | null } | null;
   /** 사용자가 허락하기를 기다리는 중 */
   pending: { userCode: string; verificationUri: string; expiresAt: number; scope: string } | null;
   /** 마지막으로 끝난 시도 */
