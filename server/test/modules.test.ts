@@ -271,6 +271,7 @@ export default async function run(input, ctx) {
       onStatus: (_id, s) => statuses.push(s),
       onInbound: () => {},
       onLog: () => {},
+      refresh: () => row,
     });
   };
 

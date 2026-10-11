@@ -90,6 +90,7 @@ export class ModuleRegistry {
       onLog: (id, level, line) => {
         if (level === 'error') this.log.warn(`[module:${id}] ${line}`);
       },
+      refresh: (id) => this.refresh(id),
     });
     this.hosts.set(row.id, host);
     return host;
@@ -158,6 +159,38 @@ export class ModuleRegistry {
       jobs.push(host.start().catch((err: Error) => this.log.warn('채널 모듈을 시작하지 못했습니다', { id: row.id, error: err.message })));
     }
     await Promise.all(jobs);
+  }
+
+  /**
+   * 모듈 프로세스를 새로 띄울 때 쓸 최신 상태. 기본 제공 모듈은 module.json 을 다시 읽어 바뀐 내용
+   * (설정 칸 · 허용 도메인 · 도구 · 로그인 선언)을 서버를 끄지 않고 반영합니다.
+   * 직접 설치한 모듈(Git · zip · 에이전트 제작)은 승인받은 module.json 을 그대로 씁니다 (바꾸려면 다시 설치).
+   */
+  refresh(id: string): ModuleRow {
+    const row = this.store.getModule(id);
+    if (row.origin !== 'builtin') return row;
+    let manifest: Manifest;
+    try {
+      manifest = parseManifest(JSON.parse(fs.readFileSync(path.join(row.dir, 'module.json'), 'utf8')), `기본 모듈 ${path.basename(row.dir)}`);
+    } catch (err) {
+      throw new ModuleError('module_manifest_reload', `'${row.manifest.name}'의 module.json 을 다시 읽지 못해 시작하지 않았습니다: ${(err as Error).message}`, 400);
+    }
+    if (manifest.id !== row.id) {
+      throw new ModuleError('module_manifest_reload', `'${row.manifest.name}'의 module.json id 가 '${manifest.id}'(으)로 바뀌어 시작하지 않았습니다. 기본 모듈의 id 는 바꿀 수 없습니다 (지금 '${row.id}').`, 400);
+    }
+    if (JSON.stringify(manifest) === JSON.stringify(row.manifest)) return row;
+    const next = this.store.upsertModule({ id: row.id, kind: row.kind, origin: row.origin, dir: row.dir, manifest, enabled: row.enabled, status: row.status, statusDetail: row.statusDetail, createdBy: row.createdBy, report: row.report });
+    this.hosts.get(id)?.update(next);
+    this.bus.activity({
+      type: 'module.updated',
+      category: 'module',
+      tone: 'pass',
+      who: manifest.name,
+      text: row.manifest.version === manifest.version ? 'module.json 바뀐 내용을 다시 읽음' : `module.json 다시 읽음 · v${row.manifest.version} → v${manifest.version}`,
+      moduleId: id,
+    });
+    this.bus.emit({ type: 'graph.changed' });
+    return next;
   }
 
   host(id: string): ModuleHost {
@@ -299,6 +332,8 @@ export class ModuleRegistry {
   async setEnabled(id: string, enabled: boolean): Promise<ModuleRow> {
     const row = this.store.getModule(id);
     if (row.status === 'pending') throw new ConflictError('module_pending', `모듈 '${row.manifest.name}'은(는) 설치 승인 전이라 켜고 끌 수 없습니다.`);
+    // 켤 때 바뀐 module.json 을 먼저 읽습니다 (읽지 못하면 켜지 않음).
+    if (enabled) this.refresh(id);
     this.store.setModuleEnabled(id, enabled);
     const host = this.host(id);
     host.update(this.store.getModule(id));
@@ -314,7 +349,8 @@ export class ModuleRegistry {
 
   async restart(id: string): Promise<ModuleRow> {
     const host = this.host(id);
-    host.update(this.store.getModule(id));
+    // 바뀐 module.json 을 바로 반영합니다 (설정 화면에도 곧 보임). 읽지 못하면 돌던 모듈을 그대로 두고 이유를 알립니다.
+    host.update(this.refresh(id));
     host.resetCrashes();
     await host.stop('user');
     // 화면 제어 모듈도 바로 띄워 운영체제 권한(손쉬운 사용 등)을 다시 확인합니다.
