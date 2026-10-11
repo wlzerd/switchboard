@@ -19,6 +19,7 @@ import { LIMIT_RULES } from '../limits/limits.ts';
 import { displayPath, suggestDirs } from '../permissions/folders.ts';
 import { groupModels } from '../anthropic/models.ts';
 import { describeSpec, localToUtc, parseSpec } from '../scheduler/spec.ts';
+import { CONNECT_MODE_LABEL, CONNECT_MODE_SETTING, parseConnectMode, readConnectMode } from '../modules/connect-mode.ts';
 import { readSourceFiles } from '../modules/install.ts';
 import { buildOverview } from './overview.ts';
 import { readBody } from './server.ts';
@@ -215,7 +216,19 @@ export function registerRoutes(server: FastifyInstance, app: App): void {
       hookVars: app.settings.hookVars(),
       envLeft: app.settings.envLeft(modules),
       env: app.settings.envGroups(),
+      moduleConnect: readConnectMode(store),
     };
+  });
+
+  /** 모듈 연결 방식: { mode: manual | semi | auto }. 다음 연결 요청부터 바로 적용됩니다. */
+  server.put('/api/settings/module-connect', async (req) => {
+    const mode = parseConnectMode(readBody(req)['mode']);
+    const before = readConnectMode(store);
+    if (mode !== before) {
+      store.setSetting(CONNECT_MODE_SETTING, mode);
+      app.bus.activity({ type: 'settings.module_connect', category: 'system', tone: 'pass', who: '설정', text: `모듈 연결 방식: ${CONNECT_MODE_LABEL[before]} → ${CONNECT_MODE_LABEL[mode]}`, agentId: null });
+    }
+    return { mode };
   });
 
   /** 모듈 설정 저장: { values: { 이름: 값 | null } }. 켜져 있으면 다시 시작해 새 값을 씁니다. */

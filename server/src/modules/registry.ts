@@ -6,6 +6,7 @@ import type { InstallReport, ModuleOrigin, ModuleRow, ModuleStatus, Store } from
 import { ConflictError, ModuleError } from '../errors.ts';
 import type { EventBus } from '../events/bus.ts';
 import type { Logger } from '../log.ts';
+import { connectApproval, readConnectMode } from './connect-mode.ts';
 import { ModuleHost } from './host.ts';
 import { Installer, type Staged } from './install.ts';
 import { parseManifest, type Manifest, type ManifestTool } from './manifest.ts';
@@ -314,8 +315,10 @@ export class ModuleRegistry {
     fs.rmSync(dest, { recursive: true, force: true });
     fs.renameSync(row.dir, dest);
     const next = this.register(dest, row.manifest, row.origin, row.report, { kind: 'module', createdBy: row.createdBy, enabled: true });
-    if (row.createdBy) this.store.connectModule(row.createdBy, id, {});
-    this.bus.activity({ type: 'module.installed', category: 'module', tone: 'new', who: row.manifest.name, text: '설치 승인됨 · 켜짐', moduleId: id, agentId: row.createdBy });
+    // 만든 에이전트에게 붙이는 것도 모듈 연결 방식을 따릅니다 (수동이면 설치만 하고 연결은 따로 승인).
+    const link = row.createdBy !== null && connectApproval(readConnectMode(this.store), row.origin) === null;
+    if (link && row.createdBy) this.store.connectModule(row.createdBy, id, {});
+    this.bus.activity({ type: 'module.installed', category: 'module', tone: 'new', who: row.manifest.name, text: `설치 승인됨 · 켜짐${row.createdBy && !link ? ' · 연결은 승인 뒤' : ''}`, moduleId: id, agentId: row.createdBy });
     return next;
   }
 

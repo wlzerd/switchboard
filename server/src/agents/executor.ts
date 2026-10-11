@@ -345,7 +345,9 @@ export class ToolExecutor {
           steps.end(stepId, false, '권한 차단');
           return { content: `실행하지 않았습니다. ${decision.reason}${def.locked ? '' : this.escalationHint(agent, env, def, described.target ?? null)}`, isError: true };
         }
-        if (decision.decision === 'ask') asks.unshift(decision.reason);
+        // 도구가 승인을 정했으면(예: 모듈 연결 방식) 권한의 허용 · 확인 대신 그것을 따릅니다 (차단은 위에서 이미 막음).
+        if (typeof described.ask === 'string') asks.unshift(described.ask);
+        else if (described.ask !== false && decision.decision === 'ask') asks.unshift(decision.reason);
       }
     }
 
@@ -367,7 +369,7 @@ export class ToolExecutor {
         threadId: env.threadId,
         kind: def ? 'permission' : 'hook',
         title: `${def?.label ?? title} · ${described.summary}`,
-        detail: { permission: def?.key ?? null, target: described.target, rule: asks.join(' / '), tool: use.name, input: JSON.stringify(input).slice(0, 2000) },
+        detail: { permission: def?.key ?? null, target: described.target, rule: asks.join(' / '), tool: use.name, input: JSON.stringify(input).slice(0, 2000), ...(described.always === false ? { always: false } : {}) },
         signal: env.signal,
       });
       const result = await wait;

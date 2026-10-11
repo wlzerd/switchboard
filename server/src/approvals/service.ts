@@ -65,6 +65,7 @@ export class ApprovalService {
         rule: input.detail.rule,
         target: input.detail.target ?? input.title,
         status: 'pending',
+        ...(input.detail.always === false ? { always: false } : {}),
       });
       this.bus.emit({ type: 'timeline.add', agentId: input.agentId, item });
     }
@@ -95,6 +96,9 @@ export class ApprovalService {
     if (row.status !== 'pending') {
       const what = row.status === 'expired' ? '시간이 지나 만료된' : row.status === 'cancelled' ? '작업이 취소되어 닫힌' : row.status === 'approved' ? '이미 허용된' : '이미 거부된';
       throw new ConflictError('approval_closed', `${what} 승인 요청입니다${row.reason ? ` (${row.reason})` : ''}.`);
+    }
+    if (decision === 'always' && row.detail.always === false) {
+      throw new ValidationError('approval_no_always', `이 승인 요청은 '항상 허용'을 받지 않습니다. 이번만 허용하거나 거부하세요 (${row.detail.rule}).`);
     }
     return this.finish(id, decision, null);
   }

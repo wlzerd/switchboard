@@ -36,11 +36,11 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
   return <button type="button" role="switch" className="switch" aria-checked={checked} aria-label={label} disabled={disabled} onClick={() => onChange(!checked)} />;
 }
 
-export function Seg<T extends string | number>({ value, options, onChange, label, role = 'radiogroup' }: { value: T; options: { value: T; label: string; className?: string; disabled?: boolean }[]; onChange: (v: T) => void; label: string; role?: string }) {
+export function Seg<T extends string | number>({ value, options, onChange, label, role = 'radiogroup' }: { value: T; options: { value: T; label: string; className?: string; disabled?: boolean; title?: string }[]; onChange: (v: T) => void; label: string; role?: string }) {
   return (
     <div className="seg" role={role} aria-label={label}>
       {options.map((o) => (
-        <button key={String(o.value)} type="button" role="radio" aria-checked={value === o.value} className={o.className} disabled={o.disabled} onClick={() => onChange(o.value)}>
+        <button key={String(o.value)} type="button" role="radio" aria-checked={value === o.value} className={o.className} disabled={o.disabled} title={o.title} onClick={() => onChange(o.value)}>
           {o.label}
         </button>
       ))}
