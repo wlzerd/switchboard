@@ -25,6 +25,7 @@ import type { ProjectService } from '../projects/service.ts';
 import type { SchedulerService } from '../scheduler/service.ts';
 import type { SettingsService } from '../settings/service.ts';
 import { builtinTools, type DelegateInput, type HeartbeatToolInput, type ResolvedReport, type SkillInput, type ToolServices } from '../tools/builtin.ts';
+import { connectableModules } from './prompt.ts';
 import type { ToolEnv } from '../tools/types.ts';
 import {
   delegationProblem,
@@ -146,6 +147,10 @@ export class AgentManager {
       delegate: (agent, env, input) => this.delegate(agent, env, input),
       heartbeat: (agent, env, input) => this.setHeartbeatFromTool(agent, env, input),
       resolveReport: (agent, env, raw) => this.resolveReport(agent, env, raw),
+      modules: {
+        check: (agent, moduleId) => this.checkConnect(agent, moduleId),
+        connect: (agent, moduleId, reason) => this.connectRequested(agent, moduleId, reason),
+      },
       projects: {
         track: (env, abs, input) => {
           const task = this.d.store.findTask(env.taskId);
@@ -496,6 +501,44 @@ export class AgentManager {
     });
     this.d.bus.emit({ type: 'graph.changed' });
     return row;
+  }
+
+  /* ───────── 에이전트의 모듈 연결 요청 (module_connect) ───────── */
+
+  /** 연결을 요청할 수 있는 모듈인지: 있고, 승인됐고, 화면 제어가 아닌 것. 이미 연결돼 있으면 linked. */
+  checkConnect(agent: AgentRow, raw: string): { id: string; name: string; linked: boolean } {
+    const id = raw.trim().toLowerCase();
+    const links = this.d.store.listAgentModules(agent.id);
+    const row = this.d.store.findModule(id);
+    if (!row) {
+      const ids = connectableModules(this.d.store.listModules(), new Set(links.map((l) => l.moduleId))).map((m) => m.id);
+      throw new ValidationError('module_connect_unknown', `'${raw}' 모듈이 없습니다. 연결을 요청할 수 있는 모듈: ${ids.slice(0, 15).join(', ') || '(없음)'}`);
+    }
+    if (row.status === 'pending') throw new ConflictError('module_connect_pending', `'${row.manifest.name}'은(는) 설치 승인을 기다리는 중이라 연결할 수 없습니다.`);
+    if (row.status === 'rejected') throw new ConflictError('module_connect_rejected', `'${row.manifest.name}'은(는) 설치가 거부된 모듈입니다.`);
+    if (row.manifest.computer) throw new ValidationError('module_connect_computer', `'${row.manifest.name}'은(는) 화면 제어 모듈이라 사용자가 에이전트 설정에서만 연결합니다.`);
+    return { id: row.id, name: row.manifest.name, linked: links.some((l) => l.moduleId === row.id) };
+  }
+
+  /** 승인을 받은 연결 요청: 채널 모듈은 메시지를 받지 않는 '도구만'으로 연결합니다. */
+  connectRequested(agent: AgentRow, raw: string, reason: string): string {
+    const m = this.checkConnect(agent, raw);
+    if (m.linked) return `'${m.name}'은(는) 이미 연결되어 있습니다.`;
+    const row = this.d.store.getModule(m.id);
+    const channel = row.manifest.channel;
+    this.d.store.connectModule(agent.id, row.id, channel ? { targets: [], trigger: 'none' } : {});
+    this.d.bus.activity({ type: 'module.connected', category: 'module', tone: 'pass', who: agent.name, text: `${row.manifest.name} 연결 (에이전트 요청 · ${reason.replace(/\s+/g, ' ').slice(0, 80)})`, agentId: agent.id, moduleId: row.id });
+    this.d.bus.emit({ type: 'graph.changed' });
+    const tools = row.manifest.tools.map((t) => t.name);
+    const can = [
+      ...(tools.length > 0 ? [`${tools.join(', ')} 도구`] : []),
+      ...(channel && channel.send !== false ? [`send_message 로 ${row.manifest.name} 에 보내기`] : []),
+    ];
+    return [
+      `'${row.manifest.name}'을(를) 연결했습니다.${can.length > 0 ? ` 이제 ${can.join(' · ')}를 쓸 수 있습니다.` : ''}`,
+      ...(channel ? ['채널 메시지는 받지 않고 도구만 쓰도록 연결했습니다 (받기는 사용자가 에이전트 설정에서 바꿉니다).'] : []),
+      ...(!row.enabled ? ['다만 모듈이 꺼져 있어 사용자가 모듈 화면에서 켜야 쓸 수 있습니다.'] : []),
+    ].join(' ');
   }
 
   /** 보고 받을 곳: 메시지를 보낼 수 있는 채널 모듈이어야 합니다. */

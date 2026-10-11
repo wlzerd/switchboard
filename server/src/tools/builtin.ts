@@ -64,6 +64,13 @@ export interface HeartbeatToolInput {
   report?: ResolvedReport;
 }
 
+/** 에이전트가 설치된 모듈을 자신에게 연결해 달라고 요청할 때 (승인은 권한 'module.connect' 가 정함) */
+export interface ModuleLinkApi {
+  /** 연결을 요청할 수 있는 모듈인지 확인합니다. 안 되면 이유를 담아 던지고, 되면 이름과 이미 연결됐는지를 돌려줍니다. */
+  check(agent: AgentRow, moduleId: string): { id: string; name: string; linked: boolean };
+  connect(agent: AgentRow, moduleId: string, reason: string): string;
+}
+
 export interface ProjectApi {
   /** 등록하거나(없으면) 고칩니다(있으면). abs 는 실제 경로로 푼 값. 결과 문구를 돌려줍니다. */
   track(env: ToolEnv, abs: string, input: { name?: string; note?: string; watch?: boolean }): string;
@@ -82,6 +89,7 @@ export interface ToolServices {
   heartbeat: (agent: AgentRow, env: ToolEnv, input: HeartbeatToolInput) => string;
   /** report_to 글을 실제 보낼 곳으로 풉니다. 고를 수 없는 곳이면 이유와 함께 예외를 던집니다. */
   resolveReport: (agent: AgentRow, env: ToolEnv, raw: string) => ResolvedReport;
+  modules: ModuleLinkApi;
   projects: ProjectApi;
 }
 
@@ -526,6 +534,34 @@ const moduleCreate = (s: ToolServices): BuiltinTool => ({
   },
 });
 
+/* ───────── 모듈 연결 요청 ───────── */
+
+const moduleConnect = (s: ToolServices): BuiltinTool => ({
+  name: 'module_connect',
+  title: '모듈 연결 요청',
+  description:
+    '설치되어 있지만 자신에게 연결되지 않은 모듈 · 스킬을 연결해 달라고 요청합니다 (시스템 프롬프트의 "연결을 요청할 수 있는 모듈"). ' +
+    '사용자가 승인하면 연결되고 그 도구를 바로 쓸 수 있습니다. 채널 모듈은 메시지를 받지 않는 "도구만"으로 연결됩니다. 일에 꼭 필요할 때만 쓰고, reason 에 무엇에 쓸지 적습니다.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      module: { type: 'string', minLength: 1, maxLength: 64, description: '연결할 모듈 id' },
+      reason: { type: 'string', minLength: 1, maxLength: 300, description: '무엇에 쓰려는지 (승인 카드에 보임)' },
+    },
+    required: ['module', 'reason'],
+    additionalProperties: false,
+  },
+  describe(input, env): Described {
+    // 연결할 수 없는 모듈이면 승인을 묻기 전에 이유를 알립니다. 이미 연결돼 있으면 묻지 않습니다.
+    const m = s.modules.check(env.agent, str(input, 'module'));
+    if (m.linked) return { permission: null, target: m.id, summary: `${m.name} · 이미 연결됨` };
+    return { permission: 'module.connect', target: m.id, text: str(input, 'reason'), summary: `${m.name} 연결 · ${str(input, 'reason').replace(/\s+/g, ' ').slice(0, 60)}` };
+  },
+  async run(input, env) {
+    return s.modules.connect(env.agent, str(input, 'module'), str(input, 'reason'));
+  },
+});
+
 /* ───────── 위임 ───────── */
 
 const delegateTask = (s: ToolServices): BuiltinTool => ({
@@ -743,7 +779,7 @@ const scheduleCancel = (s: ToolServices): BuiltinTool => ({
 });
 
 export function builtinTools(s: ToolServices): BuiltinTool[] {
-  return [fsRead(s), fsWrite(), fsList(), shellExec(s), httpRequest(s), sendMessage(s), skillCreate(s), moduleCreate(s), scheduleCreate(s), scheduleList(s), scheduleUpdate(s), scheduleCancel(s), delegateTask(s), heartbeatSet(s), projectTrack(s), projectUntrack(s)];
+  return [fsRead(s), fsWrite(), fsList(), shellExec(s), httpRequest(s), sendMessage(s), skillCreate(s), moduleCreate(s), moduleConnect(s), scheduleCreate(s), scheduleList(s), scheduleUpdate(s), scheduleCancel(s), delegateTask(s), heartbeatSet(s), projectTrack(s), projectUntrack(s)];
 }
 
 /** 이 도구들을 쓰려면 어떤 권한이 하나라도 허용/확인이어야 하는지 (모두 차단이면 목록에서 뺍니다). */
@@ -755,6 +791,7 @@ export const TOOL_PERMISSION: Record<string, string[]> = {
   http_request: ['net.fetch'],
   skill_create: ['skill.create'],
   module_create: ['module.create'],
+  module_connect: ['module.connect'],
   schedule_create: ['schedule.create'],
   schedule_update: ['schedule.create'],
   schedule_cancel: ['schedule.create'],

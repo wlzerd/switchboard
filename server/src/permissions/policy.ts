@@ -39,6 +39,7 @@ export const BASE_PERMISSIONS: readonly PermissionDef[] = [
   { key: 'skill.create', label: '스킬 만들기', group: '확장', scope: 'none' },
   { key: 'module.create', label: '모듈 만들기', group: '확장', scope: 'none' },
   { key: 'module.install', label: '모듈 설치 · 제거', group: '확장', scope: 'none' },
+  { key: 'module.connect', label: '모듈 연결', group: '확장', scope: 'target' },
   { key: 'schedule.create', label: '예약 실행 만들기', group: '확장', scope: 'none' },
   { key: 'heartbeat.manage', label: '하트비트 설정', group: '확장', scope: 'none' },
   { key: 'screen.control', label: '화면 제어', group: '민감', scope: 'none' },

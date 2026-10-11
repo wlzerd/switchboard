@@ -40,6 +40,37 @@ export interface PromptInput {
   screen?: boolean;
   /** 이 에이전트가 관리하는 프로젝트 */
   projects?: readonly { name: string; path: string; note: string; watch: boolean }[];
+  /** 설치돼 있지만 아직 연결하지 않아 연결을 요청할 수 있는 모듈 (connectableModules) */
+  available?: readonly ModuleRow[];
+}
+
+/** 목록에 보일 연결 요청 후보 수 */
+const AVAILABLE_SHOWN = 30;
+
+/**
+ * 에이전트가 연결을 요청할 수 있는 모듈: 설치 · 승인되어 켜져 있고, 아직 연결하지 않았으며, 쓸 것(도구나 보낼 채널)이 있는 것.
+ * 화면 제어 모듈은 사람이 에이전트 설정에서만 연결합니다.
+ */
+export function connectableModules(modules: readonly ModuleRow[], linked: ReadonlySet<string>): ModuleRow[] {
+  return modules.filter(
+    (m) =>
+      m.enabled &&
+      m.status !== 'pending' &&
+      m.status !== 'rejected' &&
+      !m.manifest.computer &&
+      !linked.has(m.id) &&
+      (m.manifest.tools.length > 0 || (m.manifest.channel !== null && m.manifest.channel.send !== false)),
+  );
+}
+
+/** 연결 요청 후보 한 줄: 이름 · id · 종류 · 한 줄 설명 · 도구 */
+function availableLine(m: ModuleRow): string {
+  const kind = m.kind === 'skill' ? ' · 스킬' : m.manifest.channel ? (m.manifest.channel.send === false ? ' · 받기 전용 채널' : ' · 채널') : '';
+  const desc = m.manifest.description.trim().replace(/\s+/g, ' ');
+  const short = desc.length > 100 ? `${desc.slice(0, 100)}…` : desc;
+  const names = m.manifest.tools.map((t) => t.name);
+  const tools = names.length > 0 ? ` · 도구 ${names.slice(0, 6).join(', ')}${names.length > 6 ? ` 외 ${names.length - 6}개` : ''}` : ' · send_message 로 보내기';
+  return `- ${m.manifest.name} (id: ${m.id})${kind}${short ? `: ${short}` : ''}${tools}`;
 }
 
 /** 관리 중인 프로젝트와 등록 규칙 */
@@ -124,6 +155,16 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
   const moduleLines = connected.filter((m) => !m.manifest.channel).map((m) => `- ${m.manifest.name} (${m.kind === 'skill' ? '스킬' : '모듈'}: ${m.manifest.tools.map((t) => t.name).join(', ')})`);
 
   const canBuild = ['skill.create', 'module.create'].some((k) => agent.permissions[k] && agent.permissions[k].mode !== 'deny');
+  const available = (agent.permissions['module.connect']?.mode ?? 'ask') !== 'deny' ? (input.available ?? []) : [];
+  const availableSection =
+    available.length > 0
+      ? [
+          '## 연결을 요청할 수 있는 모듈',
+          ...available.slice(0, AVAILABLE_SHOWN).map(availableLine),
+          ...(available.length > AVAILABLE_SHOWN ? [`- 외 ${available.length - AVAILABLE_SHOWN}개`] : []),
+          '- 일에 꼭 필요한데 연결되지 않은 모듈이 있으면 module_connect 로 연결을 요청한다. 사용자가 승인하면 연결되고 그 도구를 바로 쓸 수 있다.',
+        ].join('\n')
+      : '';
   const canHeartbeat = (agent.permissions['heartbeat.manage']?.mode ?? 'ask') !== 'deny';
   const hb = agent.heartbeat;
   const report = agent.report;
@@ -162,6 +203,7 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
     input.screen ? SCREEN_SECTION : '',
     `## 연결된 채널\n${channelLines}`,
     moduleLines.length > 0 ? `## 연결된 모듈·스킬\n${moduleLines.join('\n')}` : '',
+    availableSection,
     `## 권한\n${perms}`,
     `## 기본 금지 조항 (끌 수 없음)\n${GUARD_DEFS.map((g) => `- ${g.name}`).join('\n')}`,
     canBuild ? `## 모듈·스킬 제작 가이드\n새 기능이 필요하면 아래 가이드에 따라 스킬(skill_create)이나 모듈(module_create)을 만든다.\n\n${loadModuleGuide(input.rootDir)}` : '',

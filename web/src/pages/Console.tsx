@@ -144,6 +144,7 @@ const TOOL_ICON: Record<string, string> = {
   send_message: 'chat',
   skill_create: 'bolt',
   module_create: 'cube',
+  module_connect: 'cube',
   schedule_create: 'clock',
   schedule_list: 'clock',
   schedule_update: 'clock',

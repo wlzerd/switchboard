@@ -21,7 +21,7 @@ import type { BuiltinTool, DelegationOrigin, ToolEnv } from '../tools/types.ts';
 import { isSilentReport } from './autonomy.ts';
 import type { StepReporter, ToolExecutor } from './executor.ts';
 import { boundHistory, danglingToolResults, sanitizeFallbackContent, stripThinking, textOf, type HistoryMessage } from './history.ts';
-import { buildSystemPrompt, userHeader } from './prompt.ts';
+import { buildSystemPrompt, connectableModules, userHeader } from './prompt.ts';
 import { COMPUTER_TOOLSET } from './screen.ts';
 import { LiveSink, QuietSink, type TaskSink } from './sink.ts';
 
@@ -381,7 +381,7 @@ export class AgentRuntime {
   }
 
   /** 도구 목록: 권한이 모두 차단인 내장 도구는 빼고, 연결된 모듈·스킬 도구를 더합니다. 이름순으로 고정해 캐시를 지킵니다. */
-  private buildTools(agent: AgentRow, model: ModelSummary | null, level: number, quiet: boolean): { tools: unknown[]; hadServer: boolean; hadComputer: boolean } {
+  private buildTools(agent: AgentRow, model: ModelSummary | null, level: number, quiet: boolean, connectable: number): { tools: unknown[]; hadServer: boolean; hadComputer: boolean } {
     const hasChannel = this.d.store.listAgentModules(agent.id).some((l) => {
       const ch = this.d.store.findModule(l.moduleId)?.manifest.channel;
       return Boolean(ch) && ch?.send !== false;
@@ -392,6 +392,8 @@ export class AgentRuntime {
       if (t.name === 'send_message' && !hasChannel) continue;
       if (t.name === 'schedule_list' && agent.permissions['schedule.create']?.mode === 'deny') continue;
       if (t.name === 'delegate_task' && !agent.delegation.send) continue;
+      // 연결을 요청할 모듈이 없으면 module_connect 를 주지 않습니다.
+      if (t.name === 'module_connect' && connectable === 0) continue;
       if (keys.length > 0 && keys.every((k) => (agent.permissions[k]?.mode ?? 'ask') === 'deny')) continue;
       custom.push({ name: t.name, description: t.description, input_schema: t.input_schema, eager_input_streaming: true });
     }
@@ -517,8 +519,9 @@ export class AgentRuntime {
         assertDailyBudget(agent.name, store.usageTotal(agent.id, dayKey(new Date(), tz)), agent.limits.tokensPerDay, tz);
 
         const level = this.d.serverToolLevel.get(agent.model) ?? 0;
-        const { tools, hadServer, hadComputer } = this.buildTools(agent, model, level, quiet);
         const links = store.listAgentModules(agent.id).map((l) => store.findModule(l.moduleId)).filter((m): m is NonNullable<typeof m> => m !== null);
+        const available = connectableModules(store.listModules(), new Set(links.map((m) => m.id)));
+        const { tools, hadServer, hadComputer } = this.buildTools(agent, model, level, quiet, available.length);
         const prompt = buildSystemPrompt({
           agent,
           defs: this.d.defs(),
@@ -530,6 +533,7 @@ export class AgentRuntime {
           rootDir: config.rootDir,
           screen: hadComputer,
           projects: this.d.projectsFor(agent),
+          available,
         });
         const hash = sha256(`${agent.model}\n${prompt.fixed}\n${prompt.dynamic}\n${JSON.stringify(tools)}`);
         const threadNow = store.getThread(thread.id);

@@ -13,6 +13,7 @@
         "skill.create": { "mode": "deny", "scope": [], "always": [] },
         "module.create": { "mode": "deny", "scope": [], "always": [] },
         "module.install": { "mode": "deny", "scope": [], "always": [] },
+        "module.connect": { "mode": "deny", "scope": [], "always": [] },
         "schedule.create": { "mode": "deny", "scope": [], "always": [] },
         "heartbeat.manage": { "mode": "deny", "scope": [], "always": [] },
         "screen.control": { "mode": "deny", "scope": [], "always": [] }
@@ -32,6 +33,7 @@
         "skill.create": { "mode": "ask", "scope": [], "always": [] },
         "module.create": { "mode": "ask", "scope": [], "always": [] },
         "module.install": { "mode": "ask", "scope": [], "always": [] },
+        "module.connect": { "mode": "ask", "scope": [], "always": [] },
         "schedule.create": { "mode": "ask", "scope": [], "always": [] },
         "heartbeat.manage": { "mode": "ask", "scope": [], "always": [] },
         "screen.control": { "mode": "ask", "scope": [], "always": [] }
@@ -51,6 +53,7 @@
         "skill.create": { "mode": "allow", "scope": [], "always": [] },
         "module.create": { "mode": "allow", "scope": [], "always": [] },
         "module.install": { "mode": "ask", "scope": [], "always": [] },
+        "module.connect": { "mode": "ask", "scope": [], "always": [] },
         "schedule.create": { "mode": "allow", "scope": [], "always": [] },
         "heartbeat.manage": { "mode": "allow", "scope": [], "always": [] },
         "screen.control": { "mode": "ask", "scope": [], "always": [] }
