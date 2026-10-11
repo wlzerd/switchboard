@@ -54,6 +54,8 @@ export interface HostDeps {
   onStatus: (id: string, status: ModuleStatus, detail: string | null) => void;
   onInbound: (id: string, msg: InboundMessage) => void;
   onLog: (id: string, level: 'info' | 'warn' | 'error', line: string) => void;
+  /** 프로세스를 새로 띄울 때 쓸 최신 상태 (기본 제공 모듈은 module.json 을 다시 읽음). 읽지 못하면 이유를 담아 던집니다. */
+  refresh: (id: string) => ModuleRow;
 }
 
 interface Reply {
@@ -140,13 +142,21 @@ export class ModuleHost {
 
   /** 프로세스를 띄우고 activate 가 끝날 때까지 기다립니다. 이미 떠 있으면 바로 돌아옵니다. */
   start(): Promise<void> {
+    if (this.ready && this.running) return this.ready;
+    // 새로 띄울 때마다 최신 상태를 씁니다. 기본 제공 모듈은 module.json 을 다시 읽어, 서버를 끄지 않아도 코드와 같은 버전으로 뜹니다.
+    try {
+      this.row = this.deps.refresh(this.id);
+    } catch (err) {
+      const msg = (err as Error).message;
+      this.setStatus('failed', msg);
+      return Promise.reject(err instanceof ModuleError ? err : new ModuleError('module_manifest_reload', msg, 400));
+    }
     if (this.row.status === 'pending') {
       return Promise.reject(new ModuleError('module_pending', `모듈 '${this.id}'은(는) 아직 설치 승인을 받지 않았습니다.`, 409));
     }
     if (!this.row.enabled) {
       return Promise.reject(new ModuleError('module_disabled', `모듈 '${this.id}'이(가) 꺼져 있습니다. 모듈 화면에서 켜세요.`, 409));
     }
-    if (this.ready && this.running) return this.ready;
     const { env, missing, problems = [] } = this.deps.envFor(this.row.manifest);
     // 화면(모듈 상태)에는 짧은 문구를, 도구를 부른 에이전트에게는 설정 화면 · 발급 페이지 주소까지 줍니다 (사용자에게 그대로 전할 수 있게).
     if (problems.length > 0) {
