@@ -14,6 +14,7 @@ import type { AgentLiveStatus, EventBus } from '../events/bus.ts';
 import type { GuardState } from '../guards/guards.ts';
 import { assertDailyBudget, assertStep, dayKey } from '../limits/limits.ts';
 import type { Logger } from '../log.ts';
+import { readConnectMode } from '../modules/connect-mode.ts';
 import type { ModuleRegistry } from '../modules/registry.ts';
 import type { PermissionDef } from '../permissions/policy.ts';
 import { TOOL_PERMISSION } from '../tools/builtin.ts';
@@ -540,6 +541,7 @@ export class AgentRuntime {
           screen: hadComputer,
           projects: this.d.projectsFor(agent),
           available,
+          connectMode: readConnectMode(store),
         });
         const hash = sha256(`${agent.model}\n${prompt.fixed}\n${prompt.dynamic}\n${JSON.stringify(tools)}`);
         const threadNow = store.getThread(thread.id);

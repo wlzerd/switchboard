@@ -131,7 +131,7 @@ function ApprovalsModal({ onClose }: { onClose: () => void }) {
               {a.detail.input ? <pre className="codebox" style={{ maxHeight: 140 }}>{a.detail.input}</pre> : null}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 <button type="button" className="btn primary sm" disabled={busy === a.id} onClick={() => void decide(a, 'once')}>이번만 허용</button>
-                {a.detail.permission && a.detail.target ? (
+                {a.detail.permission && a.detail.target && a.detail.always !== false ? (
                   <button type="button" className="btn sm" disabled={busy === a.id} onClick={() => void decide(a, 'always')}>항상 허용</button>
                 ) : null}
                 <button type="button" className="btn danger sm" disabled={busy === a.id} onClick={() => void decide(a, 'deny')}>거부</button>

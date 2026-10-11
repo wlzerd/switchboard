@@ -80,6 +80,13 @@ export interface Described {
   method?: string | null;
   text?: string | null;
   summary: string;
+  /**
+   * 승인을 도구가 정할 때 (권한의 허용 · 확인 · 항상 허용 목록 대신): 글이면 그 이유로 묻고, false 면 묻지 않습니다.
+   * 어느 쪽이든 권한이 차단이면 막히고, 훅의 확인은 그대로 적용됩니다. 없으면 권한대로 합니다.
+   */
+  ask?: string | false;
+  /** false 면 승인 카드에 '항상 허용'을 두지 않습니다 (매번 승인) */
+  always?: boolean;
 }
 
 export interface BuiltinTool {

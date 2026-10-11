@@ -2,11 +2,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentRow, ModuleRow } from '../db/store.ts';
 import { GUARD_DEFS } from '../guards/guards.ts';
+import { connectApproval, type ConnectMode } from '../modules/connect-mode.ts';
 import type { PermissionDef } from '../permissions/policy.ts';
 import { reportLabel, SILENT_TOKEN } from './autonomy.ts';
 import { abilitySummary } from './capability.ts';
 
 const MODE_LABEL = { allow: '허용', ask: '확인 후 실행', deny: '차단' } as const;
+
+/** 모듈 연결은 권한(허용 · 확인) 대신 설정의 모듈 연결 방식이 승인을 정합니다 */
+const CONNECT_MODE_TEXT: Record<ConnectMode, string> = {
+  manual: '연결할 때마다 사용자 승인 (모듈 연결 방식: 수동)',
+  semi: '에이전트가 만든 모듈은 바로, 나머지는 사용자 승인 (모듈 연결 방식: 반자동)',
+  auto: '승인 없이 바로 연결 (모듈 연결 방식: 자동)',
+};
+const CONNECT_HOW: Record<ConnectMode, string> = {
+  manual: 'module_connect 로 연결을 요청한다. 사용자가 승인하면 연결되고 그 도구를 바로 쓸 수 있다.',
+  semi: "module_connect 로 연결을 요청한다. '바로 연결'이라 적힌 모듈은 승인 없이, 나머지는 사용자가 승인하면 연결되고 그 도구를 바로 쓸 수 있다.",
+  auto: 'module_connect 로 연결한다. 승인 없이 바로 연결되고 그 도구를 바로 쓸 수 있다.',
+};
 
 let guideCache: { path: string; mtime: number; text: string } | null = null;
 
@@ -42,6 +55,8 @@ export interface PromptInput {
   projects?: readonly { name: string; path: string; note: string; watch: boolean }[];
   /** 설치돼 있지만 아직 연결하지 않아 연결을 요청할 수 있는 모듈 (connectableModules) */
   available?: readonly ModuleRow[];
+  /** 설정의 모듈 연결 방식 (없으면 연결할 때마다 승인하는 것으로 안내) */
+  connectMode?: ConnectMode;
 }
 
 /** 목록에 보일 연결 요청 후보 수 */
@@ -64,13 +79,13 @@ export function connectableModules(modules: readonly ModuleRow[], linked: Readon
 }
 
 /** 연결 요청 후보 한 줄: 이름 · id · 종류 · 한 줄 설명 · 도구 */
-function availableLine(m: ModuleRow): string {
+function availableLine(m: ModuleRow, direct: boolean): string {
   const kind = m.kind === 'skill' ? ' · 스킬' : m.manifest.channel ? (m.manifest.channel.send === false ? ' · 받기 전용 채널' : ' · 채널') : '';
   const desc = m.manifest.description.trim().replace(/\s+/g, ' ');
   const short = desc.length > 100 ? `${desc.slice(0, 100)}…` : desc;
   const names = m.manifest.tools.map((t) => t.name);
   const tools = names.length > 0 ? ` · 도구 ${names.slice(0, 6).join(', ')}${names.length > 6 ? ` 외 ${names.length - 6}개` : ''}` : ' · send_message 로 보내기';
-  return `- ${m.manifest.name} (id: ${m.id})${kind}${short ? `: ${short}` : ''}${tools}`;
+  return `- ${m.manifest.name} (id: ${m.id})${kind}${short ? `: ${short}` : ''}${tools}${direct ? ' · 바로 연결' : ''}`;
 }
 
 /** 관리 중인 프로젝트와 등록 규칙 */
@@ -141,6 +156,7 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
     .map((d) => {
       const r = agent.permissions[d.key];
       if (d.locked) return `- ${d.label}: 차단 (기본 금지 조항)`;
+      if (d.key === 'module.connect' && input.connectMode && r?.mode !== 'deny') return `- ${d.label}: ${CONNECT_MODE_TEXT[input.connectMode]}`;
       if (!r) return `- ${d.label}: 확인 후 실행`;
       const scope = r.mode === 'allow' && r.scope.length > 0 ? ` (범위: ${r.scope.join(', ')})` : '';
       return `- ${d.label}: ${MODE_LABEL[r.mode]}${scope}`;
@@ -156,13 +172,15 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
 
   const canBuild = ['skill.create', 'module.create'].some((k) => agent.permissions[k] && agent.permissions[k].mode !== 'deny');
   const available = (agent.permissions['module.connect']?.mode ?? 'ask') !== 'deny' ? (input.available ?? []) : [];
+  const connectMode = input.connectMode ?? 'manual';
   const availableSection =
     available.length > 0
       ? [
           '## 연결을 요청할 수 있는 모듈',
-          ...available.slice(0, AVAILABLE_SHOWN).map(availableLine),
+          // 반자동이면 승인 없이 연결되는 모듈(에이전트가 만든 것)에 표시를 붙입니다.
+          ...available.slice(0, AVAILABLE_SHOWN).map((m) => availableLine(m, connectMode === 'semi' && connectApproval(connectMode, m.origin) === null)),
           ...(available.length > AVAILABLE_SHOWN ? [`- 외 ${available.length - AVAILABLE_SHOWN}개`] : []),
-          '- 일에 꼭 필요한데 연결되지 않은 모듈이 있으면 module_connect 로 연결을 요청한다. 사용자가 승인하면 연결되고 그 도구를 바로 쓸 수 있다.',
+          `- 일에 꼭 필요한데 연결되지 않은 모듈이 있으면 ${CONNECT_HOW[connectMode]}`,
         ].join('\n')
       : '';
   const canHeartbeat = (agent.permissions['heartbeat.manage']?.mode ?? 'ask') !== 'deny';

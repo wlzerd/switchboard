@@ -203,7 +203,8 @@ function ApprovalItem({ d }: { d: Record<string, unknown> }) {
   const pending = status === 'pending';
   const perm = str(d, 'perm');
   const decided = DECISION[status];
-  const canAlways = defs?.some((p) => p.key === perm && p.scope !== 'none') ?? false;
+  // '항상 허용'을 받지 않는 요청(예: 모듈 연결 방식에 따라 매번 승인)에는 버튼을 두지 않습니다.
+  const canAlways = (defs?.some((p) => p.key === perm && p.scope !== 'none') ?? false) && d['always'] !== false;
   const decide = async (decision: 'once' | 'always' | 'deny'): Promise<void> => {
     setBusy(true);
     try {

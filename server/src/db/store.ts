@@ -198,6 +198,8 @@ export interface ApprovalDetail {
   tool: string | null;
   input: string | null;
   moduleId?: string;
+  /** false 면 '항상 허용'을 받지 않습니다 (매번 승인하는 요청) */
+  always?: boolean;
 }
 
 export interface ApprovalRow {

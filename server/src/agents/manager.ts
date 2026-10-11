@@ -15,6 +15,7 @@ import type { GuardState } from '../guards/guards.ts';
 import type { HookEngine } from '../hooks/engine.ts';
 import { limitChanges, sameLimits, validateLimits, type AgentLimits } from '../limits/limits.ts';
 import type { Logger } from '../log.ts';
+import { connectApproval, readConnectMode } from '../modules/connect-mode.ts';
 import { TOOL_NAME_RE } from '../modules/manifest.ts';
 import type { InboundMessage } from '../modules/protocol.ts';
 import type { ModuleRegistry } from '../modules/registry.ts';
@@ -50,6 +51,8 @@ import { ServerToolState } from './server-tools.ts';
 
 const HEARTBEAT_TICK_MS = 15_000;
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
+/** 모듈 연결 방식이 수동이라 만든 모듈 · 스킬을 만든 에이전트에게 붙이지 않았을 때 덧붙이는 말 */
+const NOT_LINKED = "모듈 연결 방식이 '수동'이라 연결하지 않았습니다. 쓰려면 module_connect 로 연결을 요청하세요 (사용자 승인).";
 
 const NAME_RE = /^[\p{L}\p{N} _-]+$/u;
 const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
@@ -507,8 +510,8 @@ export class AgentManager {
 
   /* ───────── 에이전트의 모듈 연결 요청 (module_connect) ───────── */
 
-  /** 연결을 요청할 수 있는 모듈인지: 있고, 승인됐고, 화면 제어가 아닌 것. 이미 연결돼 있으면 linked. */
-  checkConnect(agent: AgentRow, raw: string): { id: string; name: string; linked: boolean } {
+  /** 연결을 요청할 수 있는 모듈인지: 있고, 승인됐고, 화면 제어가 아닌 것. 이미 연결돼 있으면 linked, 승인이 필요하면 그 이유(ask). */
+  checkConnect(agent: AgentRow, raw: string): { id: string; name: string; linked: boolean; ask: string | null } {
     const id = raw.trim().toLowerCase();
     const links = this.d.store.listAgentModules(agent.id);
     const row = this.d.store.findModule(id);
@@ -519,7 +522,14 @@ export class AgentManager {
     if (row.status === 'pending') throw new ConflictError('module_connect_pending', `'${row.manifest.name}'은(는) 설치 승인을 기다리는 중이라 연결할 수 없습니다.`);
     if (row.status === 'rejected') throw new ConflictError('module_connect_rejected', `'${row.manifest.name}'은(는) 설치가 거부된 모듈입니다.`);
     if (row.manifest.computer) throw new ValidationError('module_connect_computer', `'${row.manifest.name}'은(는) 화면 제어 모듈이라 사용자가 에이전트 설정에서만 연결합니다.`);
-    return { id: row.id, name: row.manifest.name, linked: links.some((l) => l.moduleId === row.id) };
+    return { id: row.id, name: row.manifest.name, linked: links.some((l) => l.moduleId === row.id), ask: connectApproval(readConnectMode(this.d.store), row.origin) };
+  }
+
+  /** 에이전트가 만든 모듈 · 스킬을 만든 에이전트에게 붙입니다. 모듈 연결 방식이 수동이면 붙이지 않고 false. */
+  private linkCreated(agentId: string, moduleId: string): boolean {
+    if (connectApproval(readConnectMode(this.d.store), 'agent') !== null) return false;
+    this.d.store.connectModule(agentId, moduleId, {});
+    return true;
   }
 
   /** 승인을 받은 연결 요청: 채널 모듈은 메시지를 받지 않는 '도구만'으로 연결합니다. */
@@ -989,7 +999,8 @@ export class AgentManager {
       throw new ValidationError('skill_tests_failed', `테스트 ${passed}/${input.tests.length} 통과 — 실패한 테스트가 있어 스킬을 연결하지 않았습니다:\n- ${failures.join('\n- ')}`);
     }
 
-    this.d.store.connectModule(agent.id, row.id, {});
+    // 고친 스킬은 이미 붙어 있던 연결을 그대로 두고, 새 스킬은 모듈 연결 방식에 따라 붙입니다.
+    const linked = this.d.store.listAgentModules(agent.id).some((l) => l.moduleId === row.id) || this.linkCreated(agent.id, row.id);
     const testsLabel = input.tests.length > 0 ? `${passed}/${input.tests.length}` : '없음';
     env.sink.timeline('skill', {
       name: input.name,
@@ -999,8 +1010,9 @@ export class AgentManager {
       code: [`name:   ${input.name}`, `input:  ${JSON.stringify((input.input_schema['properties'] as object | undefined) ?? {}).slice(0, 120)}`, `needs:  ${input.net.length > 0 ? `net.fetch(${input.net.join(', ')})` : '외부 접속 없음'}`].join('\n'),
     });
     this.d.bus.emit({ type: 'skill.created', skillId: row.id, agentId: agent.id });
-    env.sink.activity({ type: 'skill.created', category: 'skill', tone: 'new', who: '새 스킬', text: `${agent.name}가 ${input.title}(${input.name})을(를) 만들어 연결 · 테스트 ${testsLabel}`, agentId: agent.id, moduleId: row.id });
+    env.sink.activity({ type: 'skill.created', category: 'skill', tone: 'new', who: '새 스킬', text: `${agent.name}가 ${input.title}(${input.name})을(를) 만들어 ${linked ? '연결' : '설치 (연결은 승인 뒤)'} · 테스트 ${testsLabel}`, agentId: agent.id, moduleId: row.id });
     this.d.bus.emit({ type: 'graph.changed' });
+    if (!linked) return `스킬 '${input.title}'(${input.name}) v${version} 을(를) 만들었습니다. 테스트 ${testsLabel}. ${NOT_LINKED}`;
     return `스킬 '${input.title}'(${input.name}) v${version} 을(를) 만들어 연결했습니다. 테스트 ${testsLabel}. 다음 단계부터 도구로 쓸 수 있습니다.`;
   }
 
@@ -1037,9 +1049,10 @@ export class AgentManager {
     const warns = staged.report.checks.filter((c) => c.level === 'warn').map((c) => `${c.label}: ${c.detail}`);
     if (decision.decision === 'allow' && install.decision === 'allow') {
       const row = await this.d.registry.install(staged.token, { kind: 'module', createdBy: agent.id, enabled: true });
-      this.d.store.connectModule(agent.id, row.id, {});
-      this.d.bus.activity({ type: 'module.installed', category: 'module', tone: 'new', who: row.manifest.name, text: `${agent.name}가 만들어 설치함`, agentId: agent.id, moduleId: row.id });
-      return `모듈 '${row.manifest.name}'(${row.id})을(를) 설치하고 연결했습니다.${warns.length ? ` 확인할 점: ${warns.join(' / ')}` : ''}`;
+      const linked = this.linkCreated(agent.id, row.id);
+      this.d.bus.activity({ type: 'module.installed', category: 'module', tone: 'new', who: row.manifest.name, text: `${agent.name}가 만들어 설치함${linked ? '' : ' · 연결은 승인 뒤'}`, agentId: agent.id, moduleId: row.id });
+      const head = linked ? `모듈 '${row.manifest.name}'(${row.id})을(를) 설치하고 연결했습니다.` : `모듈 '${row.manifest.name}'(${row.id})을(를) 설치했습니다. ${NOT_LINKED}`;
+      return `${head}${warns.length ? ` 확인할 점: ${warns.join(' / ')}` : ''}`;
     }
 
     if (env.quiet) {
@@ -1070,7 +1083,8 @@ export class AgentManager {
     if (r.decision === 'expired') return r.note ?? `승인 대기 시간이 지나 모듈 '${row.manifest.name}'을(를) 설치하지 않았습니다.`;
     const after = this.d.store.findModule(row.id);
     const status = after ? `${after.status}${after.statusDetail ? ` — ${after.statusDetail}` : ''}` : '알 수 없음';
-    return `모듈 '${row.manifest.name}' 설치를 승인받았습니다. 현재 상태: ${status}${warns.length ? ` · 확인할 점: ${warns.join(' / ')}` : ''}`;
+    const linked = this.d.store.listAgentModules(agent.id).some((l) => l.moduleId === row.id);
+    return `모듈 '${row.manifest.name}' 설치를 승인받았습니다. 현재 상태: ${status}${linked ? '' : ` · ${NOT_LINKED}`}${warns.length ? ` · 확인할 점: ${warns.join(' / ')}` : ''}`;
   }
 
   shutdown(): void {

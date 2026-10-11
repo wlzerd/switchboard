@@ -5,7 +5,7 @@ import { api, errorText } from '../lib/api';
 import { loginBadge, remaining, shortUrl } from '../lib/login';
 import { settingsPatch, sourceBadge, stillMissing } from '../lib/settings';
 import { onServerEvent, refreshOverview, toast } from '../lib/store';
-import type { HookVarView, KeyView, LoginView, ModuleField, ModuleSettingsView, SettingsResponse } from '../lib/types';
+import type { ConnectMode, HookVarView, KeyView, LoginView, ModuleField, ModuleSettingsView, SettingsResponse } from '../lib/types';
 
 /**
  * 설정: .env 와 DB(화면에서 관리)의 구분.
@@ -123,7 +123,7 @@ export function SettingsPage({ focus }: { focus: string | null }) {
       ) : null}
 
       <KeysSection keys={data.keys} onChanged={reload} />
-      <ModulesSection modules={data.modules} focus={focus} onChanged={reload} />
+      <ModulesSection modules={data.modules} focus={focus} onChanged={reload} connectMode={data.moduleConnect} onConnectMode={(mode) => setData({ ...data, moduleConnect: mode })} />
       <HookVarsSection vars={data.hookVars} onChanged={(v) => setData({ ...data, hookVars: v })} reload={reload} />
       <EnvSection groups={data.env} />
     </div>
@@ -337,12 +337,33 @@ function KeyRow({ k, onChanged }: { k: KeyView; onChanged: () => void }) {
 
 /* ───────── 모듈 ───────── */
 
-function ModulesSection({ modules, focus, onChanged }: { modules: ModuleSettingsView[]; focus: string | null; onChanged: () => void }) {
+const CONNECT_MODES: { value: ConnectMode; label: string; title: string }[] = [
+  { value: 'manual', label: '수동', title: '연결할 때마다 승인' },
+  { value: 'semi', label: '반자동', title: '에이전트가 만든 모듈은 바로, 나머지는 승인' },
+  { value: 'auto', label: '자동', title: '모두 바로 연결' },
+];
+
+function ModulesSection({ modules, focus, onChanged, connectMode, onConnectMode }: { modules: ModuleSettingsView[]; focus: string | null; onChanged: () => void; connectMode: ConnectMode; onConnectMode: (mode: ConnectMode) => void }) {
   const [tab, setTab] = useState<string | null>(focus);
+  const [savingMode, setSavingMode] = useState(false);
   useEffect(() => {
     if (focus) setTab(focus);
   }, [focus]);
   const current = modules.find((m) => m.id === tab) ?? modules.find((m) => m.enabled && m.missing.length > 0) ?? modules[0] ?? null;
+
+  const changeMode = async (mode: ConnectMode): Promise<void> => {
+    if (mode === connectMode) return;
+    setSavingMode(true);
+    try {
+      const r = await api<{ mode: ConnectMode }>('/api/settings/module-connect', { method: 'PUT', body: { mode } });
+      onConnectMode(r.mode);
+      toast(`모듈 연결 방식을 '${CONNECT_MODES.find((o) => o.value === r.mode)?.label ?? r.mode}'(으)로 바꿨습니다`, 'ok');
+    } catch (err) {
+      toast(errorText(err), 'error');
+    } finally {
+      setSavingMode(false);
+    }
+  };
 
   const dot = (m: ModuleSettingsView): string => {
     if (m.fields.some((f) => f.source === 'env')) return 'var(--warn)';
@@ -360,7 +381,12 @@ function ModulesSection({ modules, focus, onChanged }: { modules: ModuleSettings
           { text: '비밀값 DB · 암호화', tone: 'ok', lock: true },
           { text: '설정 DB', tone: 'msg' },
         ]}
-      />
+      >
+        <span className="dim" style={{ fontSize: 12.5, alignSelf: 'center' }}>
+          연결
+        </span>
+        <Seg value={connectMode} options={CONNECT_MODES.map((o) => ({ ...o, disabled: savingMode }))} onChange={(mode) => void changeMode(mode)} label="모듈 연결 방식" />
+      </SectionHead>
       {modules.length === 0 || !current ? (
         <div className="card empty">설정이 필요한 모듈 없음</div>
       ) : (

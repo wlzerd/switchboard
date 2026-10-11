@@ -64,10 +64,13 @@ export interface HeartbeatToolInput {
   report?: ResolvedReport;
 }
 
-/** 에이전트가 설치된 모듈을 자신에게 연결해 달라고 요청할 때 (승인은 권한 'module.connect' 가 정함) */
+/** 에이전트가 설치된 모듈을 자신에게 연결해 달라고 요청할 때 (승인은 설정의 모듈 연결 방식이 정하고, 권한 'module.connect' 가 차단이면 막힘) */
 export interface ModuleLinkApi {
-  /** 연결을 요청할 수 있는 모듈인지 확인합니다. 안 되면 이유를 담아 던지고, 되면 이름과 이미 연결됐는지를 돌려줍니다. */
-  check(agent: AgentRow, moduleId: string): { id: string; name: string; linked: boolean };
+  /**
+   * 연결을 요청할 수 있는 모듈인지 확인합니다. 안 되면 이유를 담아 던지고, 되면 이름 · 이미 연결됐는지 ·
+   * 승인이 필요한 이유(모듈 연결 방식에 따라 승인 없이 연결하면 null)를 돌려줍니다.
+   */
+  check(agent: AgentRow, moduleId: string): { id: string; name: string; linked: boolean; ask: string | null };
   connect(agent: AgentRow, moduleId: string, reason: string): string;
 }
 
@@ -464,7 +467,7 @@ const skillCreate = (s: ToolServices): BuiltinTool => ({
   title: '스킬 만들기',
   description:
     '새 스킬(도구)을 만들어 자신에게 연결합니다. code 는 `export default async function run(input, ctx) { … return 결과 }` 형태의 ES 모듈이어야 합니다. ' +
-    '외부 접속은 ctx.fetch 로만 하고 net 에 도메인을 선언하세요. 비밀값은 코드에 쓰지 말고 ctx.env 로 받습니다. tests 에 넣은 입력으로 바로 시험한 뒤 연결됩니다.',
+    '외부 접속은 ctx.fetch 로만 하고 net 에 도메인을 선언하세요. 비밀값은 코드에 쓰지 말고 ctx.env 로 받습니다. tests 에 넣은 입력으로 바로 시험한 뒤 연결됩니다 (모듈 연결 방식이 수동이면 연결은 module_connect 로 따로 요청).',
   input_schema: {
     type: 'object',
     properties: {
@@ -504,7 +507,7 @@ const moduleCreate = (s: ToolServices): BuiltinTool => ({
   title: '모듈 만들기',
   description:
     '새 모듈을 만들어 설치 승인을 요청합니다. files 에 module.json 과 진입점(index.js)을 넣으세요. 형식은 시스템 프롬프트의 모듈 제작 가이드를 따릅니다. ' +
-    '사용자가 승인하면 설치되고 자신에게 연결됩니다.',
+    '사용자가 승인하면 설치되고 자신에게 연결됩니다 (모듈 연결 방식이 수동이면 연결은 module_connect 로 따로 요청).',
   input_schema: {
     type: 'object',
     properties: {
@@ -541,7 +544,7 @@ const moduleConnect = (s: ToolServices): BuiltinTool => ({
   title: '모듈 연결 요청',
   description:
     '설치되어 있지만 자신에게 연결되지 않은 모듈 · 스킬을 연결해 달라고 요청합니다 (시스템 프롬프트의 "연결을 요청할 수 있는 모듈"). ' +
-    '사용자가 승인하면 연결되고 그 도구를 바로 쓸 수 있습니다. 채널 모듈은 메시지를 받지 않는 "도구만"으로 연결됩니다. 일에 꼭 필요할 때만 쓰고, reason 에 무엇에 쓸지 적습니다.',
+    '설정의 모듈 연결 방식에 따라 바로 연결되거나 사용자가 승인하면 연결되고, 연결되면 그 도구를 바로 쓸 수 있습니다. 채널 모듈은 메시지를 받지 않는 "도구만"으로 연결됩니다. 일에 꼭 필요할 때만 쓰고, reason 에 무엇에 쓸지 적습니다.',
   input_schema: {
     type: 'object',
     properties: {
@@ -555,7 +558,10 @@ const moduleConnect = (s: ToolServices): BuiltinTool => ({
     // 연결할 수 없는 모듈이면 승인을 묻기 전에 이유를 알립니다. 이미 연결돼 있으면 묻지 않습니다.
     const m = s.modules.check(env.agent, str(input, 'module'));
     if (m.linked) return { permission: null, target: m.id, summary: `${m.name} · 이미 연결됨` };
-    return { permission: 'module.connect', target: m.id, text: str(input, 'reason'), summary: `${m.name} 연결 · ${str(input, 'reason').replace(/\s+/g, ' ').slice(0, 60)}` };
+    const summary = `${m.name} 연결 · ${str(input, 'reason').replace(/\s+/g, ' ').slice(0, 60)}`;
+    // 승인은 모듈 연결 방식이 정합니다 (권한이 허용 · 항상 허용이어도 묻고, 확인이어도 묻지 않을 수 있음). 권한이 차단이면 권한 검사가 막고,
+    // 훅의 확인은 그대로 걸립니다. 연결에는 항상 허용 목록을 쓰지 않으므로 승인 카드에 '항상 허용'을 두지 않습니다.
+    return { permission: 'module.connect', target: m.id, text: str(input, 'reason'), summary, ask: m.ask ?? false, always: false };
   },
   async run(input, env) {
     return s.modules.connect(env.agent, str(input, 'module'), str(input, 'reason'));

@@ -233,12 +233,16 @@ export interface HookVarView {
   usedBy: string[];
 }
 
+/** 모듈 연결 방식: 수동(매번 승인) · 반자동(에이전트가 만든 모듈만 바로) · 자동(모두 바로) */
+export type ConnectMode = 'manual' | 'semi' | 'auto';
+
 export interface SettingsResponse {
   keys: KeyView[];
   modules: ModuleSettingsView[];
   hookVars: HookVarView[];
   envLeft: { moduleId: string | null; name: string }[];
   env: { title: string; items: { key: string; value: string; tone: 'ok' | 'muted' | 'plain'; isNew: boolean }[] }[];
+  moduleConnect: ConnectMode;
 }
 
 export interface InstallCheck {
@@ -431,7 +435,7 @@ export interface ApprovalView {
   taskId: string | null;
   kind: string;
   title: string;
-  detail: { permission: string | null; target: string | null; rule: string; tool: string | null; input: string | null; moduleId?: string };
+  detail: { permission: string | null; target: string | null; rule: string; tool: string | null; input: string | null; moduleId?: string; always?: boolean };
   status: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
   decision: 'once' | 'always' | 'deny' | null;
   reason: string | null;
