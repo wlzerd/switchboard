@@ -4,9 +4,12 @@
 export const API_URL = 'https://api.search.brave.com/res/v1/llm/context';
 /** 응답 형식을 이 날짜 버전으로 고정합니다 (2026-07-31: 새 본문 추출 방식). 바꿀 때는 Brave 의 변경 이력을 확인하세요. */
 export const API_VERSION = '2026-07-31';
-/** API 한도: 검색어 600자 · 75단어 */
-export const QUERY_MAX_CHARS = 600;
-export const QUERY_MAX_WORDS = 75;
+/** API 한도: 검색어 400자 · 50단어. 글자 수는 JSON 스키마의 maxLength 처럼 유니코드 문자(코드 포인트) 단위로 셉니다 */
+export const QUERY_MAX_CHARS = 400;
+export const QUERY_MAX_WORDS = 50;
+/** 오류 문구에 덧붙이는 Brave 오류 meta: 항목 수 · 값 길이 상한 */
+export const META_MAX_PARTS = 6;
+export const META_VALUE_MAX = 120;
 /** 한 번에 가져올 본문 분량(토큰). API 상한은 32768 이지만 대화 하나에 넣기에는 커서 16384 까지 */
 export const TOKENS_MIN = 1024;
 export const TOKENS_MAX = 16384;
@@ -71,7 +74,8 @@ export function parseConfig(env) {
 export function parseQuery(v) {
   if (typeof v !== 'string' || v.trim() === '') throw new Error('검색어(query)가 비어 있습니다.');
   const q = v.trim().replace(/\s+/g, ' ');
-  if (q.length > QUERY_MAX_CHARS) throw new Error(`검색어는 ${QUERY_MAX_CHARS}자까지 쓸 수 있습니다. 지금 ${q.length}자입니다.`);
+  const chars = Array.from(q).length;
+  if (chars > QUERY_MAX_CHARS) throw new Error(`검색어는 ${QUERY_MAX_CHARS}자까지 쓸 수 있습니다. 지금 ${chars}자입니다.`);
   const words = q.split(' ').length;
   if (words > QUERY_MAX_WORDS) throw new Error(`검색어는 ${QUERY_MAX_WORDS}단어까지 쓸 수 있습니다. 지금 ${words}단어입니다.`);
   return q;
@@ -144,6 +148,11 @@ function clean(s) {
     .trim();
 }
 
+/** 오류 문구 안에 넣을 한 줄 (제어 문자 · 줄바꿈 없이) */
+function oneLine(s) {
+  return clean(s).replace(/\s+/g, ' ');
+}
+
 function bullet(s) {
   const [first, ...rest] = clean(s).split('\n');
   return [`- ${first}`, ...rest.map((l) => `  ${l}`)].join('\n');
@@ -201,6 +210,28 @@ export function when(ms, timeZone) {
 }
 
 /**
+ * Brave 오류의 meta → 짧은 글. 'plan=Free' 처럼 단순한 값과, 검사 오류 목록(errors)의 '위치: 이유' 만 씁니다.
+ * 중첩된 값과 errors[].input(보낸 값을 그대로 되돌려 줌)은 넣지 않습니다.
+ */
+export function metaText(meta) {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return '';
+  const parts = [];
+  for (const [k, v] of Object.entries(meta)) {
+    if (k === 'errors' && Array.isArray(v)) {
+      for (const item of v) {
+        if (!item || typeof item !== 'object' || typeof item.msg !== 'string' || item.msg.trim() === '') continue;
+        const loc = Array.isArray(item.loc) ? item.loc.filter((x) => typeof x === 'string' || typeof x === 'number').join('.') : '';
+        parts.push(clip(oneLine(`${loc ? `${loc}: ` : ''}${item.msg}`), META_VALUE_MAX));
+      }
+    } else if ((typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') && /^[\w.-]{1,40}$/.test(k)) {
+      const text = oneLine(String(v));
+      if (text !== '') parts.push(`${k}=${clip(text, META_VALUE_MAX)}`);
+    }
+  }
+  return parts.slice(0, META_MAX_PARTS).join(' · ');
+}
+
+/**
  * 실패 응답 → 이유 문구와 종류. kind: auth(키) · plan(플랜) · quota(월 한도 · 크레딧) · rate(초당 한도) · invalid(요청) · server(Brave 쪽)
  * retryInMs 는 초당 한도에 걸렸을 때 다시 될 때까지의 시간.
  * @param {number} [now]
@@ -209,7 +240,9 @@ export function when(ms, timeZone) {
 export function describeError(status, body, headers, now = Date.now(), timeZone) {
   const e = body && typeof body === 'object' && body.error && typeof body.error === 'object' ? body.error : {};
   const code = typeof e.code === 'string' ? e.code : '';
-  const detail = typeof e.detail === 'string' ? clip(e.detail.trim(), 300) : '';
+  const detail = typeof e.detail === 'string' ? clip(oneLine(e.detail), 300) : '';
+  /** Brave 가 알려 준 내용 (detail · meta) */
+  const said = [detail, metaText(e.meta)].filter(Boolean).join(' · ');
   const tail = typeof e.id === 'string' && e.id ? ` (오류 id ${clip(e.id, 60)})` : '';
   const windows = rateWindows(headers);
   const shortest = windows.reduce((a, w) => (a === null || (w.window ?? Infinity) < (a.window ?? Infinity) ? w : a), null);
@@ -222,7 +255,11 @@ export function describeError(status, body, headers, now = Date.now(), timeZone)
     return { kind: 'auth', message: `이 API 키에 연결된 Brave 구독이 없습니다. Brave Search API 대시보드에서 Search 플랜을 구독했는지 확인하세요.${tail}` };
   }
   if (code === 'OPTION_NOT_IN_PLAN' || code === 'RESOURCE_NOT_ALLOWED') {
-    return { kind: 'plan', message: `지금 Brave 플랜에서는 이 검색(LLM Context)을 쓸 수 없습니다. 대시보드에서 Search 플랜인지 확인하세요.${detail ? ` Brave: ${detail}` : ''}${tail}` };
+    // 엔드포인트가 막힌 것인지 요청의 옵션이 막힌 것인지는 Brave 가 준 내용(detail · meta)으로만 알 수 있어 그대로 붙입니다.
+    return {
+      kind: 'plan',
+      message: `이 API 키의 Brave 플랜에 이번 요청에 쓴 기능이 들어 있지 않습니다 (${status} · ${code}). LLM Context 검색은 Search 플랜에 들어 있으니, 대시보드에서 Search 플랜을 구독했는지와 설정한 키가 그 구독의 키인지 확인하세요.${said ? ` Brave: ${said}` : ''}${tail}`,
+    };
   }
   if (code === 'CREDIT_EXHAUSTED') {
     return { kind: 'quota', message: `Brave 크레딧을 다 썼습니다. 대시보드에서 크레딧을 충전하거나 다음 달 무료 크레딧을 기다리세요.${tail}` };
@@ -236,13 +273,13 @@ export function describeError(status, body, headers, now = Date.now(), timeZone)
     return { kind: 'rate', retryInMs: sec * 1000, message: `Brave 의 초당 요청 한도에 걸렸습니다 (429). ${sec}초 뒤 다시 시도하세요.${tail}` };
   }
   if (status === 403) {
-    return { kind: 'auth', message: `Brave 가 검색을 허락하지 않았습니다 (403${code ? ` · ${code}` : ''}). API 키와 구독 플랜을 확인하세요.${detail ? ` Brave: ${detail}` : ''}${tail}` };
+    return { kind: 'auth', message: `Brave 가 검색을 허락하지 않았습니다 (403${code ? ` · ${code}` : ''}). API 키와 구독 플랜을 확인하세요.${said ? ` Brave: ${said}` : ''}${tail}` };
   }
   if (code === 'INTERNAL' || status >= 500) {
     return { kind: 'server', message: `Brave 서버 오류입니다 (${status}). 잠시 뒤 다시 시도하세요.${tail}` };
   }
   if (status === 400 || status === 422 || code === 'INVALID_URL') {
-    return { kind: 'invalid', message: `Brave 가 검색 요청을 거절했습니다 (${status}${code ? ` · ${code}` : ''})${detail ? `: ${detail}` : '.'}${tail}` };
+    return { kind: 'invalid', message: `Brave 가 검색 요청을 거절했습니다 (${status}${code ? ` · ${code}` : ''})${said ? `: ${said}` : '.'}${tail}` };
   }
-  return { kind: 'invalid', message: `Brave 검색 요청이 실패했습니다 (${status}${code ? ` · ${code}` : ''})${detail ? `: ${detail}` : '.'}${tail}` };
+  return { kind: 'invalid', message: `Brave 검색 요청이 실패했습니다 (${status}${code ? ` · ${code}` : ''})${said ? `: ${said}` : '.'}${tail}` };
 }
