@@ -46,6 +46,7 @@ import { ToolExecutor } from './executor.ts';
 import { ScreenLocks } from './screen.ts';
 import { permissionsFromPreset, type Preset } from './presets.ts';
 import { AgentRuntime, type TaskEnd, type TaskInput } from './runtime.ts';
+import { ServerToolState } from './server-tools.ts';
 
 const HEARTBEAT_TICK_MS = 15_000;
 const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
@@ -124,7 +125,8 @@ export class AgentManager {
   private readonly d: ManagerDeps;
   private readonly runtimes = new Map<string, AgentRuntime>();
   private readonly slots: Semaphore;
-  private readonly serverToolLevel = new Map<string, number>();
+  /** 서버 도구(웹 검색 · 가져오기)를 키 · 모델마다 어떻게 보낼지 (모든 에이전트가 함께 씀) */
+  private readonly serverTools = new ServerToolState();
   /** 화면 제어 도구 묶음을 받지 않는 모델 (한 번 거절되면 그 모델에는 빼고 보냄) */
   private readonly noComputer = new Set<string>();
   /** 화면 하나는 한 번에 한 작업만 */
@@ -267,7 +269,7 @@ export class AgentManager {
         builtins: this.builtins,
         defs: () => this.permissionDefs(),
         guardState: this.d.guardState,
-        serverToolLevel: this.serverToolLevel,
+        serverTools: this.serverTools,
         noComputer: this.noComputer,
         projectsFor: (agent) => this.d.projects.list(agent.id).map((p) => ({ name: p.name, path: p.path, note: p.note, watch: p.watch })),
         ...(this.d.attachments ? { attachments: this.d.attachments } : {}),

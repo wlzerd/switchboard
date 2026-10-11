@@ -23,6 +23,7 @@ import type { StepReporter, ToolExecutor } from './executor.ts';
 import { boundHistory, danglingToolResults, sanitizeFallbackContent, stripThinking, textOf, type HistoryMessage } from './history.ts';
 import { buildSystemPrompt, connectableModules, userHeader } from './prompt.ts';
 import { COMPUTER_TOOLSET } from './screen.ts';
+import { classifyServerToolError, serverToolDroppedNotice, serverToolOffNotice, type SentServerTool, type ServerToolName, type ServerToolState } from './server-tools.ts';
 import { LiveSink, QuietSink, type TaskSink } from './sink.ts';
 
 /** 도구 정의 + 시스템 프롬프트 고정 부분의 캐시 (대화 부분보다 길게 유지: 긴 유지 시간이 앞에 와야 합니다) */
@@ -81,8 +82,8 @@ export interface RuntimeDeps {
   builtins: BuiltinTool[];
   defs: () => PermissionDef[];
   guardState: GuardState;
-  /** 모델별 서버 도구 버전 단계: 0=최신, 1=기본, 2=사용 안 함 */
-  serverToolLevel: Map<string, number>;
+  /** 서버 도구(웹 검색 · 가져오기)를 키 · 모델마다 어떻게 보낼지 (버전 단계, 조직 설정에서 꺼짐) */
+  serverTools: ServerToolState;
   /** 화면 제어 도구 묶음을 거절한 모델 */
   noComputer: Set<string>;
   /** 시스템 프롬프트에 넣을 관리 중인 프로젝트 */
@@ -381,7 +382,7 @@ export class AgentRuntime {
   }
 
   /** 도구 목록: 권한이 모두 차단인 내장 도구는 빼고, 연결된 모듈·스킬 도구를 더합니다. 이름순으로 고정해 캐시를 지킵니다. */
-  private buildTools(agent: AgentRow, model: ModelSummary | null, level: number, quiet: boolean, connectable: number): { tools: unknown[]; hadServer: boolean; hadComputer: boolean } {
+  private buildTools(agent: AgentRow, model: ModelSummary | null, quiet: boolean, connectable: number): { tools: unknown[]; server: SentServerTool[]; hadComputer: boolean } {
     const hasChannel = this.d.store.listAgentModules(agent.id).some((l) => {
       const ch = this.d.store.findModule(l.moduleId)?.manifest.channel;
       return Boolean(ch) && ch?.send !== false;
@@ -403,20 +404,26 @@ export class AgentRuntime {
     custom.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
     const server: Record<string, unknown>[] = [];
-    if (level < 2 && (model?.webSearch ?? true)) {
-      if (agent.permissions['web.search']?.mode === 'allow') {
-        server.push({ type: level === 0 ? 'web_search_20260209' : 'web_search_20250305', name: 'web_search', max_uses: 10 });
-      }
+    const sent: SentServerTool[] = [];
+    if (model?.webSearch ?? true) {
+      // 버전은 이 키 · 모델에서 받는 것으로, 조직 설정에서 꺼진 도구는 뺍니다. index 는 최종 tools 배열 안의 위치입니다.
+      const add = (name: ServerToolName, extra: Record<string, unknown>): void => {
+        const type = this.d.serverTools.version(agent.keyId, agent.model, name);
+        if (type === null) return;
+        sent.push({ name, type, index: custom.length + server.length });
+        server.push({ type, name, max_uses: 10, ...extra });
+      };
+      if (agent.permissions['web.search']?.mode === 'allow') add('web_search', {});
       const net = agent.permissions['net.fetch'];
       if (net?.mode === 'allow') {
         const domains = net.scope.map((p) => p.replace(/^\*\./, '')).filter((p) => p !== '*');
-        server.push({ type: level === 0 ? 'web_fetch_20260209' : 'web_fetch_20250910', name: 'web_fetch', max_uses: 10, ...(domains.length > 0 ? { allowed_domains: domains } : {}) });
+        add('web_fetch', domains.length > 0 ? { allowed_domains: domains } : {});
       }
     }
     // 화면 제어: 연결된 화면 제어 모듈이 있고 권한이 차단이 아니며, 조용한 작업이 아닐 때만 도구 묶음을 엽니다 (요청마다 약 4,500 토큰).
     const screen = !quiet && this.d.registry.computerFor(agent.id) !== null && (agent.permissions['screen.control']?.mode ?? 'ask') !== 'deny' && !this.d.noComputer.has(agent.model);
     const toolset = screen ? [{ type: COMPUTER_TOOLSET }] : [];
-    return { tools: [...custom, ...server, ...toolset], hadServer: server.length > 0, hadComputer: screen };
+    return { tools: [...custom, ...server, ...toolset], server: sent, hadComputer: screen };
   }
 
   /** 채널로 보내는 단계 (답장 · 보고 공통). 실패해도 작업은 끝내고 이유를 대화에 남깁니다. */
@@ -518,10 +525,9 @@ export class AgentRuntime {
         assertStep(agent.name, step, agent.limits.stepsPerTask);
         assertDailyBudget(agent.name, store.usageTotal(agent.id, dayKey(new Date(), tz)), agent.limits.tokensPerDay, tz);
 
-        const level = this.d.serverToolLevel.get(agent.model) ?? 0;
         const links = store.listAgentModules(agent.id).map((l) => store.findModule(l.moduleId)).filter((m): m is NonNullable<typeof m> => m !== null);
         const available = connectableModules(store.listModules(), new Set(links.map((m) => m.id)));
-        const { tools, hadServer, hadComputer } = this.buildTools(agent, model, level, quiet, available.length);
+        const { tools, server, hadComputer } = this.buildTools(agent, model, quiet, available.length);
         const prompt = buildSystemPrompt({
           agent,
           defs: this.d.defs(),
@@ -592,12 +598,25 @@ export class AgentRuntime {
             step -= 1;
             continue;
           }
-          if (err instanceof Anthropic.BadRequestError && hadServer && level < 2) {
-            // 이 모델이 해당 버전의 서버 도구(웹 검색·가져오기)를 받지 않으면 한 단계 낮춰 다시 보냅니다.
-            this.d.serverToolLevel.set(agent.model, level + 1);
-            this.d.log.info('서버 도구 버전을 낮춰 다시 요청합니다', { model: agent.model, level: level + 1, reason: err.message.slice(0, 160) });
-            step -= 1;
-            continue;
+          if (err instanceof Anthropic.BadRequestError && server.length > 0) {
+            // 서버 도구 탓인 400 만 여기서 다룹니다. 그 밖의 400 은 아래에서 원래 오류로 알립니다.
+            const fault = classifyServerToolError(err.message, server);
+            if (fault?.kind === 'off') {
+              // 조직 설정에서 꺼진 도구는 버전을 낮춰도 풀리지 않습니다. 이 키로는 그 도구만 잠시 빼고 바로 다시 보냅니다 (다른 서버 도구는 그대로).
+              this.d.serverTools.turnOff(agent.keyId, fault.tool);
+              sink.timeline('system', { text: serverToolOffNotice(fault.tool) });
+              this.d.log.warn('Anthropic 조직 설정에서 꺼진 서버 도구를 빼고 다시 요청합니다', { tool: fault.tool, keyId: agent.keyId, reason: err.message.slice(0, 160) });
+              step -= 1;
+              continue;
+            }
+            if (fault?.kind === 'version') {
+              // 이 모델이 해당 버전을 받지 않으면 오류가 가리킨 도구만 한 단계 낮춰 다시 보냅니다 (더 낮출 버전이 없으면 뺌).
+              const lowered = fault.tools.map((t) => ({ tool: t, to: this.d.serverTools.lower(agent.keyId, agent.model, t) }));
+              for (const l of lowered) if (l.to === null) sink.timeline('system', { text: serverToolDroppedNotice(l.tool, agent.model) });
+              this.d.log.info('서버 도구 버전을 낮춰 다시 요청합니다', { model: agent.model, tools: lowered, reason: err.message.slice(0, 160) });
+              step -= 1;
+              continue;
+            }
           }
           if (err instanceof Anthropic.APIError) {
             const e = describeAnthropicError(err, { op: 'message', agentName: agent.name, model: agent.model, timeoutMs: config.anthropicTimeoutMs });
