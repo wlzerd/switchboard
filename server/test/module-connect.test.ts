@@ -29,6 +29,10 @@ beforeAll(async () => {
   addModule('fake-off', { name: '꺼진 모듈', tools: [tool('off_tool')] }, { enabled: false });
   addModule('fake-made', { name: '만든 모듈', tools: [tool('made_find')] }, { origin: 'agent' });
   addModule('fake-git', { name: '받은 모듈', tools: [tool('git_find')] }, { origin: 'git' });
+  addModule('fake-inbox', { name: '받는 함', channel: { label: '받는 함', send: false }, tools: [tool('inbox_list')] });
+  addModule('fake-sleep', { name: '잠든 모듈', tools: [tool('sleep_tool')] }, { enabled: false });
+  addModule('fake-notify', { name: '알림 모듈', channel: { label: '알림', send: false } });
+  addModule('fake-eyes', { name: '눈', computer: { label: '화면' } });
 });
 afterAll(async () => {
   await h.close();
@@ -81,20 +85,38 @@ describe('모듈 연결 방식', () => {
 });
 
 describe('모듈 연결 요청 (module_connect)', () => {
-  it('프롬프트에 연결을 요청할 수 있는 모듈만 보이고 (화면 제어 · 승인 대기 · 꺼진 모듈 · 이미 연결한 모듈은 빼고), 반자동이면 바로 연결되는 모듈에 표시가 붙습니다', async () => {
+  it('프롬프트: 연결된 모듈은 실제로 도구를 받는 것을 종류 · 도구와 함께 (받기 전용 채널 포함), 꺼진 것은 따로 적고, 연결 후보에는 꺼진 모듈도 표시와 함께 나옵니다', async () => {
     const a = h.addAgent('목록이');
     h.app.store.connectModule(a.id, 'fake-chan', { trigger: 'none' });
+    h.app.store.connectModule(a.id, 'fake-inbox', { trigger: 'none' });
+    h.app.store.connectModule(a.id, 'fake-off', {});
+    h.app.store.connectModule(a.id, 'fake-notify', { trigger: 'none' });
+    h.app.store.connectModule(a.id, 'fake-eyes', {});
     h.scripts.set(a.keyId, () => ({ text: '네' }));
     const t = ask(a, '안녕');
     await until(() => h.app.store.getTask(t.id).status === 'done', '작업 끝');
     const p = calls(a)[0]!;
     const sys = systemText(p);
+    // 연결된 모듈: 도구 목록과 같은 기준 (꺼진 모듈의 도구는 주지 않고 '지금은 못 씀'에만)
+    expect(sys).toContain('## 연결된 모듈·스킬\n');
+    expect(sys).toContain('- 가짜 채널 (모듈 · 채널): send_message 로 보내기\n');
+    expect(sys).toContain('- 받는 함 (모듈 · 받기 전용 채널): inbox_list\n');
+    expect(sys).toContain('- 알림 모듈 (모듈 · 받기 전용 채널): 도구 없음 (알림만 받음)\n');
+    expect(sys).toContain('- 눈 (화면 제어): 화면 보기 · 마우스 · 키보드\n');
+    expect(sys).toContain('- 꺼져 있어 지금은 못 씀 (사용자가 모듈 화면에서 켜야 함): 꺼진 모듈\n');
+    expect(sys).not.toContain('- 꺼진 모듈 (모듈): off_tool');
+    expect(toolsOf(p)).toContain('inbox_list');
+    expect(toolsOf(p)).not.toContain('off_tool');
+    // 연결 후보: 꺼진 모듈도 표시와 함께, 화면 제어 · 승인 대기 · 이미 연결한 모듈은 빼고
     expect(toolsOf(p)).toContain('module_connect');
     expect(sys).toContain('## 연결을 요청할 수 있는 모듈');
     expect(sys).toContain('- 가짜 도구 (id: fake-tool): 웹에서 무언가를 찾아 줍니다 · 도구 fake_find\n');
     expect(sys).toContain('- 만든 모듈 (id: fake-made): fake-made 설명 · 도구 made_find · 바로 연결\n');
     expect(sys).toContain('- 받은 모듈 (id: fake-git): fake-git 설명 · 도구 git_find\n');
-    for (const hidden of ['fake-screen', 'fake-wait', 'fake-off', 'fake-chan']) expect(sys).not.toContain(`(id: ${hidden})`);
+    expect(sys).toContain('- 잠든 모듈 (id: fake-sleep): fake-sleep 설명 · 도구 sleep_tool · 꺼짐(연결 뒤 사용자가 켜야 씀)\n');
+    for (const hidden of ['fake-screen', 'fake-wait', 'fake-chan', 'fake-inbox', 'fake-off']) expect(sys).not.toContain(`(id: ${hidden})`);
+    // 셸에는 서버 로그인이 없으니 외부 서비스는 모듈 도구로
+    expect(sys).toContain('- 셸에는 서버의 로그인 · 토큰이 넘어가지 않는다 (gh 같은 CLI 로그인도 셸에서는 보이지 않는다). 외부 서비스는 연결된 모듈의 도구로 다루고, 연결된 것이 없으면 먼저 연결을 요청할 수 있는 모듈에서 찾는다.');
     expect(sys).toContain("module_connect 로 연결을 요청한다. '바로 연결'이라 적힌 모듈은 승인 없이, 나머지는 사용자가 승인하면 연결되고 그 도구를 바로 쓸 수 있다.");
     expect(sys).toContain('- 모듈 연결: 에이전트가 만든 모듈은 바로, 나머지는 사용자 승인 (모듈 연결 방식: 반자동)');
   });
@@ -254,8 +276,8 @@ describe('모듈 연결 요청 (module_connect)', () => {
     expect(out.isError).toBe(true);
     expect(out.content).toMatch(/^'nope' 모듈이 없습니다\. 연결을 요청할 수 있는 모듈: /);
     const listed = out.content.split(': ')[1]!.split(', ');
-    expect(listed).toEqual(expect.arrayContaining(['fake-tool', 'fake-chan']));
-    for (const hidden of ['fake-screen', 'fake-wait', 'fake-off']) expect(listed).not.toContain(hidden);
+    expect(listed).toEqual(expect.arrayContaining(['fake-tool', 'fake-chan', 'fake-off', 'fake-sleep']));
+    for (const hidden of ['fake-screen', 'fake-wait']) expect(listed).not.toContain(hidden);
   });
 
   it.each([
@@ -290,8 +312,8 @@ describe('모듈 연결 요청 (module_connect)', () => {
 
   it('연결을 요청할 모듈이 하나도 없으면 도구를 주지 않습니다', async () => {
     const a = h.addAgent('다있음');
-    // 하네스가 올린 기본 모듈 중 켜져 있고 쓸 것이 있는 모듈도 모두 연결합니다.
-    for (const m of h.app.store.listModules()) if (m.enabled && !m.manifest.computer && m.status !== 'pending') h.app.store.connectModule(a.id, m.id, {});
+    // 하네스가 올린 기본 모듈까지, 화면 제어 · 승인 대기가 아닌 모듈은 꺼져 있어도 모두 연결합니다 (꺼진 모듈도 후보이므로).
+    for (const m of h.app.store.listModules()) if (!m.manifest.computer && m.status !== 'pending' && m.status !== 'rejected') h.app.store.connectModule(a.id, m.id, {});
     h.scripts.set(a.keyId, () => ({ text: '네' }));
     const t = ask(a, '안녕');
     await until(() => h.app.store.getTask(t.id).status === 'done', '작업 끝');

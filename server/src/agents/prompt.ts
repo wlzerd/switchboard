@@ -63,13 +63,12 @@ export interface PromptInput {
 const AVAILABLE_SHOWN = 30;
 
 /**
- * 에이전트가 연결을 요청할 수 있는 모듈: 설치 · 승인되어 켜져 있고, 아직 연결하지 않았으며, 쓸 것(도구나 보낼 채널)이 있는 것.
- * 화면 제어 모듈은 사람이 에이전트 설정에서만 연결합니다.
+ * 에이전트가 연결을 요청할 수 있는 모듈: 설치 · 승인됐고, 아직 연결하지 않았으며, 쓸 것(도구나 보낼 채널)이 있는 것.
+ * 꺼진 모듈도 넣습니다 (같은 기능을 새로 만들지 않고 연결을 요청하게, 켜는 것은 사용자). 화면 제어 모듈은 사람이 에이전트 설정에서만 연결합니다.
  */
 export function connectableModules(modules: readonly ModuleRow[], linked: ReadonlySet<string>): ModuleRow[] {
   return modules.filter(
     (m) =>
-      m.enabled &&
       m.status !== 'pending' &&
       m.status !== 'rejected' &&
       !m.manifest.computer &&
@@ -79,13 +78,48 @@ export function connectableModules(modules: readonly ModuleRow[], linked: Readon
 }
 
 /** 연결 요청 후보 한 줄: 이름 · id · 종류 · 한 줄 설명 · 도구 */
+/** 에이전트가 지금 그 도구를 받는 모듈인지 (registry.toolsFor 와 같은 기준) */
+function moduleUsable(m: ModuleRow): boolean {
+  return m.enabled && m.status !== 'pending' && m.status !== 'rejected';
+}
+
+/** 모듈 종류: 스킬 · 모듈 · 채널 · 받기 전용 채널 · 화면 제어 */
+function moduleRole(m: ModuleRow): string {
+  if (m.kind === 'skill') return '스킬';
+  if (m.manifest.computer) return '화면 제어';
+  if (!m.manifest.channel) return '모듈';
+  return m.manifest.channel.send === false ? '모듈 · 받기 전용 채널' : '모듈 · 채널';
+}
+
+/** 모듈로 할 수 있는 일: 도구 이름, 도구가 없으면 보내기 · 화면 조작 · 알림 받기 */
+function moduleUses(m: ModuleRow): string {
+  const names = m.manifest.tools.map((t) => t.name);
+  if (names.length > 0) return names.join(', ');
+  if (m.manifest.computer) return '화면 보기 · 마우스 · 키보드';
+  if (m.manifest.channel && m.manifest.channel.send !== false) return 'send_message 로 보내기';
+  return '도구 없음 (알림만 받음)';
+}
+
+/**
+ * 연결된 모듈 · 스킬: 지금 도구를 받는 것은 채널 여부와 관계없이 종류 · 도구와 함께 적고 (받기 전용 채널 모듈도),
+ * 꺼져 있어 도구를 받지 못하는 것은 한 줄로 따로 적습니다. 목록은 그때그때 연결 상태로 만들어 새 모듈도 바로 보입니다.
+ */
+function connectedLines(connected: readonly ModuleRow[]): string[] {
+  const off = connected.filter((m) => !moduleUsable(m));
+  return [
+    ...connected.filter(moduleUsable).map((m) => `- ${m.manifest.name} (${moduleRole(m)}): ${moduleUses(m)}`),
+    ...(off.length > 0 ? [`- 꺼져 있어 지금은 못 씀 (사용자가 모듈 화면에서 켜야 함): ${off.map((m) => `${m.manifest.name}${m.kind === 'skill' ? '(스킬)' : ''}`).join(', ')}`] : []),
+  ];
+}
+
 function availableLine(m: ModuleRow, direct: boolean): string {
   const kind = m.kind === 'skill' ? ' · 스킬' : m.manifest.channel ? (m.manifest.channel.send === false ? ' · 받기 전용 채널' : ' · 채널') : '';
   const desc = m.manifest.description.trim().replace(/\s+/g, ' ');
   const short = desc.length > 100 ? `${desc.slice(0, 100)}…` : desc;
   const names = m.manifest.tools.map((t) => t.name);
   const tools = names.length > 0 ? ` · 도구 ${names.slice(0, 6).join(', ')}${names.length > 6 ? ` 외 ${names.length - 6}개` : ''}` : ' · send_message 로 보내기';
-  return `- ${m.manifest.name} (id: ${m.id})${kind}${short ? `: ${short}` : ''}${tools}${direct ? ' · 바로 연결' : ''}`;
+  const marks = [...(m.enabled ? [] : ['꺼짐(연결 뒤 사용자가 켜야 씀)']), ...(direct ? ['바로 연결'] : [])];
+  return `- ${m.manifest.name} (id: ${m.id})${kind}${short ? `: ${short}` : ''}${tools}${marks.map((x) => ` · ${x}`).join('')}`;
 }
 
 /** 관리 중인 프로젝트와 등록 규칙 */
@@ -168,7 +202,7 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
       ? '- 연결된 채널이 없습니다. 답변은 웹 콘솔에만 표시됩니다.'
       : channels.map((m) => `- ${m.manifest.name} (channel id: ${m.id})`).join('\n');
 
-  const moduleLines = connected.filter((m) => !m.manifest.channel).map((m) => `- ${m.manifest.name} (${m.kind === 'skill' ? '스킬' : '모듈'}: ${m.manifest.tools.map((t) => t.name).join(', ')})`);
+  const moduleLines = connectedLines(connected);
 
   const canBuild = ['skill.create', 'module.create'].some((k) => agent.permissions[k] && agent.permissions[k].mode !== 'deny');
   const available = (agent.permissions['module.connect']?.mode ?? 'ask') !== 'deny' ? (input.available ?? []) : [];
@@ -212,6 +246,7 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
       '## 작업 방식',
       '- 사용자가 쓴 언어로, 필요한 만큼만 간결하게 답한다.',
       '- 파일 도구와 셸 명령은 너만의 작업 폴더 안에서 동작한다. 작업 폴더 밖은 아래 허용 폴더만 쓸 수 있고, 나머지는 막혀 있다.',
+      '- 셸에는 서버의 로그인 · 토큰이 넘어가지 않는다 (gh 같은 CLI 로그인도 셸에서는 보이지 않는다). 외부 서비스는 연결된 모듈의 도구로 다루고, 연결된 것이 없으면 먼저 연결을 요청할 수 있는 모듈에서 찾는다.',
       '- 도구 호출은 권한과 훅의 검사를 거친다. "확인 후 실행" 권한은 사용자가 승인해야 실행된다. 막히면 그 이유를 사용자에게 알리고, 같은 호출을 그대로 반복하지 말고 다른 방법을 찾거나 멈춘다.',
       '- API 키·토큰 같은 비밀값을 코드나 메시지에 쓰지 않는다. 모듈의 비밀값은 사용자가 설정 화면에 넣고 모듈은 ctx.env 로 읽는다. 서버의 .env 파일은 읽을 수 없다.',
       '- 채널(Discord, Telegram 등)에서 들어온 요청의 최종 답변은 그 대화로 자동 전송된다. 다른 채널이나 대상에 보낼 때만 send_message 를 쓴다.',
@@ -224,7 +259,7 @@ export function buildSystemPrompt(input: PromptInput): SystemPrompt {
     availableSection,
     `## 권한\n${perms}`,
     `## 기본 금지 조항 (끌 수 없음)\n${GUARD_DEFS.map((g) => `- ${g.name}`).join('\n')}`,
-    canBuild ? `## 모듈·스킬 제작 가이드\n새 기능이 필요하면 아래 가이드에 따라 스킬(skill_create)이나 모듈(module_create)을 만든다.\n\n${loadModuleGuide(input.rootDir)}` : '',
+    canBuild ? `## 모듈·스킬 제작 가이드\n새 기능이 필요하면 먼저 연결된 모듈과 연결을 요청할 수 있는 모듈에 같은 기능이 있는지 보고, 없을 때만 아래 가이드에 따라 스킬(skill_create)이나 모듈(module_create)을 만든다.\n\n${loadModuleGuide(input.rootDir)}` : '',
   ];
   const dynamic = [projectsSection(input.projects ?? []), delegationSection(agent, input), quietLines];
   const join = (parts: string[]): string => parts.filter((s) => s !== '').join('\n\n');
