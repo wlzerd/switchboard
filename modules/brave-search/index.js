@@ -50,9 +50,11 @@ const tools = {
         await sleep(err.retryInMs);
         continue;
       }
+      // 문구에 Brave 가 돌려준 글(detail · meta)이 붙으므로, 혹시 키가 섞여 있으면 가립니다.
+      const message = err.message.replaceAll(req.headers['x-subscription-token'], '(API 키)');
       // 키 · 플랜 · 한도 문제는 모듈 화면에도 띄워 사용자가 알 수 있게 합니다.
-      if (err.kind === 'auth' || err.kind === 'plan' || err.kind === 'quota') ctx.status(err.message);
-      throw new Error(err.message);
+      if (err.kind === 'auth' || err.kind === 'plan' || err.kind === 'quota') ctx.status(message);
+      throw new Error(message);
     }
     throw new Error('Brave 의 초당 요청 한도에 연달아 걸렸습니다. 잠시 뒤 다시 시도하세요.');
   },

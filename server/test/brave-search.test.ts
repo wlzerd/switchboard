@@ -1,11 +1,18 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   API_URL,
   API_VERSION,
+  META_MAX_PARTS,
+  META_VALUE_MAX,
   OUTPUT_MAX_CHARS,
+  QUERY_MAX_CHARS,
+  QUERY_MAX_WORDS,
   buildRequest,
   describeError,
   formatContext,
+  metaText,
   parseConfig,
   parseCountry,
   parseFreshness,
@@ -50,14 +57,29 @@ describe('설정', () => {
 });
 
 describe('검색어 · 기간 · 나라 · 언어', () => {
-  it('검색어: 비면 거절, 공백은 하나로, 600자 · 75단어까지', () => {
+  it('검색어: 비면 거절, 공백은 하나로, Brave 한도인 400자 · 50단어까지', () => {
     expect(() => parseQuery('   ')).toThrow('검색어(query)가 비어 있습니다.');
     expect(() => parseQuery(42)).toThrow('검색어(query)가 비어 있습니다.');
     expect(parseQuery('  서울   날씨 \n 내일 ')).toBe('서울 날씨 내일');
-    expect(parseQuery('a'.repeat(600))).toHaveLength(600);
-    expect(() => parseQuery('a'.repeat(601))).toThrow('600자까지 쓸 수 있습니다. 지금 601자입니다.');
-    expect(parseQuery(Array(75).fill('w').join(' ')).split(' ')).toHaveLength(75);
-    expect(() => parseQuery(Array(76).fill('w').join(' '))).toThrow('75단어까지 쓸 수 있습니다. 지금 76단어입니다.');
+    expect(parseQuery('a'.repeat(400))).toHaveLength(400);
+    expect(() => parseQuery('a'.repeat(401))).toThrow('400자까지 쓸 수 있습니다. 지금 401자입니다.');
+    expect(parseQuery('가'.repeat(400))).toHaveLength(400);
+    expect(parseQuery(Array(50).fill('w').join(' ')).split(' ')).toHaveLength(50);
+    expect(() => parseQuery(Array(51).fill('w').join(' '))).toThrow('50단어까지 쓸 수 있습니다. 지금 51단어입니다.');
+  });
+
+  it('검색어 글자 수는 유니코드 문자 단위 (JSON 문자열 길이가 2인 이모지도 한 글자)', () => {
+    expect(Array.from(parseQuery('😀'.repeat(400)))).toHaveLength(400);
+    expect(() => parseQuery('😀'.repeat(401))).toThrow('400자까지 쓸 수 있습니다. 지금 401자입니다.');
+  });
+
+  it('도구 설명(module.json)의 검색어 한도가 코드와 같습니다', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'modules', 'brave-search', 'module.json'), 'utf8')) as {
+      tools: { name: string; input_schema: { properties: { query: { maxLength: number; description: string } } } }[];
+    };
+    const query = manifest.tools.find((t) => t.name === 'brave_search')!.input_schema.properties.query;
+    expect(query.maxLength).toBe(QUERY_MAX_CHARS);
+    expect(query.description).toContain(`${QUERY_MAX_WORDS}단어까지`);
   });
 
   it.each([
@@ -174,13 +196,15 @@ describe('호출 한도 · 오류', () => {
     expect(rateWindows(headers())).toEqual([]);
   });
 
-  const err = (code: string, detail?: string) => ({ type: 'ErrorResponse', error: { id: 'e-1', status: 0, code, ...(detail ? { detail } : {}) }, time: 0 });
+  const err = (code: string, detail?: string, meta?: unknown) => ({ type: 'ErrorResponse', error: { id: 'e-1', status: 0, code, ...(detail ? { detail } : {}), ...(meta === undefined ? {} : { meta }) }, time: 0 });
+  const planHint = 'LLM Context 검색은 Search 플랜에 들어 있으니, 대시보드에서 Search 플랜을 구독했는지와 설정한 키가 그 구독의 키인지 확인하세요.';
 
   it.each([
     [401, err('SUBSCRIPTION_TOKEN_INVALID'), 'auth', 'Brave API 키가 맞지 않습니다 (401). 설정 화면의 Brave 검색 모듈에서 키를 다시 넣으세요. (오류 id e-1)'],
     [403, err('SUBSCRIPTION_NOT_FOUND'), 'auth', '이 API 키에 연결된 Brave 구독이 없습니다'],
     [403, null, 'auth', 'Brave 가 검색을 허락하지 않았습니다 (403). API 키와 구독 플랜을 확인하세요.'],
-    [403, err('OPTION_NOT_IN_PLAN', 'llm context not in plan'), 'plan', '이 검색(LLM Context)을 쓸 수 없습니다. 대시보드에서 Search 플랜인지 확인하세요. Brave: llm context not in plan'],
+    [403, err('OPTION_NOT_IN_PLAN', 'The option is not included in the plan.'), 'plan', `이 API 키의 Brave 플랜에 이번 요청에 쓴 기능이 들어 있지 않습니다 (403 · OPTION_NOT_IN_PLAN). ${planHint} Brave: The option is not included in the plan. (오류 id e-1)`],
+    [403, err('RESOURCE_NOT_ALLOWED'), 'plan', `(403 · RESOURCE_NOT_ALLOWED). ${planHint} (오류 id e-1)`],
     [402, err('CREDIT_EXHAUSTED'), 'quota', 'Brave 크레딧을 다 썼습니다.'],
     [429, err('QUOTA_LIMITED'), 'quota', 'Brave 사용 한도를 다 썼습니다. 2026-10-11 12:00부터 다시 쓸 수 있습니다.'],
     [429, err('RATE_LIMITED'), 'rate', 'Brave 의 초당 요청 한도에 걸렸습니다 (429). 1초 뒤 다시 시도하세요.'],
@@ -191,6 +215,33 @@ describe('호출 한도 · 오류', () => {
     const d = describeError(status, body, limited, now, 'Asia/Seoul');
     expect(d.kind).toBe(kind);
     expect(d.message).toContain(msg);
+  });
+
+  it('Brave 가 준 meta 도 붙입니다: 단순한 값은 key=value, 검사 오류는 위치: 이유 (보낸 값 · 중첩 값은 뺌)', () => {
+    const plan = describeError(403, err('OPTION_NOT_IN_PLAN', 'The option is not included in the plan.', { plan: 'Free', option: 'llm_context', limits: { rps: 1 }, note: '  여러\n줄  ' }), headers());
+    expect(plan).toMatchObject({ kind: 'plan', message: `이 API 키의 Brave 플랜에 이번 요청에 쓴 기능이 들어 있지 않습니다 (403 · OPTION_NOT_IN_PLAN). ${planHint} Brave: The option is not included in the plan. · plan=Free · option=llm_context · note=여러 줄 (오류 id e-1)` });
+
+    const invalid = describeError(
+      422,
+      err('VALIDATION', 'Unable to validate request parameter(s)', {
+        errors: [{ type: 'string_too_long', loc: ['query', 'q'], msg: 'String should have at most 400 characters', input: 'sent-value-must-not-show', ctx: { max_length: 400 } }, { loc: ['query', 'country'] }, null],
+      }),
+      headers(),
+    );
+    expect(invalid).toMatchObject({ kind: 'invalid', message: 'Brave 가 검색 요청을 거절했습니다 (422 · VALIDATION): Unable to validate request parameter(s) · query.q: String should have at most 400 characters (오류 id e-1)' });
+
+    expect(describeError(403, err('SOMETHING_NEW', undefined, { reason: 'blocked' }), headers()).message).toBe('Brave 가 검색을 허락하지 않았습니다 (403 · SOMETHING_NEW). API 키와 구독 플랜을 확인하세요. Brave: reason=blocked (오류 id e-1)');
+    expect(describeError(409, err('CONFLICT', ' first\nsecond ', { reason: 'x' }), headers()).message).toBe('Brave 검색 요청이 실패했습니다 (409 · CONFLICT): first second · reason=x (오류 id e-1)');
+  });
+
+  it('meta 정리: 객체만, 이상한 키 · 빈 값은 빼고, 항목 수 · 값 길이에 상한', () => {
+    expect([metaText(null), metaText(['plan']), metaText('plan=Free')]).toEqual(['', '', '']);
+    expect(metaText({ 'bad key': 'x', '': 'y', empty: '   ', ok: 0, flag: false })).toBe('ok=0 · flag=false');
+    const many = Object.fromEntries(Array.from({ length: META_MAX_PARTS + 2 }, (_, i) => [`k${i}`, i]));
+    expect(metaText(many)).toBe(Array.from({ length: META_MAX_PARTS }, (_, i) => `k${i}=${i}`).join(' · '));
+    expect(metaText({ long: 'x'.repeat(META_VALUE_MAX + 5) })).toBe(`long=${'x'.repeat(META_VALUE_MAX)}…`);
+    expect(metaText({ errors: [{ msg: 'm'.repeat(META_VALUE_MAX + 5) }] })).toBe(`${'m'.repeat(META_VALUE_MAX)}…`);
+    expect(metaText({ errors: [{ loc: ['body', 0, { x: 1 }], msg: 'bad' }] })).toBe('body.0: bad');
   });
 
   it('초당 한도: 다시 될 때까지의 시간(가장 짧은 창), 머리글이 없으면 1초', () => {
@@ -298,6 +349,15 @@ describe('모듈', () => {
     replies.push(reply as Reply);
     await expect(mod.tools['brave_search']!({ query: '예시' })).rejects.toThrow(msg);
     expect(statuses.at(-1)).toContain(msg);
+  });
+
+  it('플랜 문제는 Brave 가 준 내용과 함께 모듈 화면에도 띄우고, 그 안에 키가 섞여 와도 가립니다', async () => {
+    replies.push({ status: 403, body: { error: { id: 'p', status: 403, code: 'OPTION_NOT_IN_PLAN', detail: `token ${KEY} has no access`, meta: { token: KEY } } } });
+    const msg = await mod.tools['brave_search']!({ query: '예시' }).then(() => 'ok', (e: Error) => e.message);
+    expect(msg).toContain('(403 · OPTION_NOT_IN_PLAN)');
+    expect(msg).toContain('Brave: token (API 키) has no access · token=(API 키) (오류 id p)');
+    expect(statuses.at(-1)).toBe(msg);
+    expect(JSON.stringify([msg, statuses, logs])).not.toContain(KEY);
   });
 
   it('연결 실패 · 시간 초과 · 해석할 수 없는 응답은 각각의 이유로, 어디에도 키를 남기지 않습니다', async () => {

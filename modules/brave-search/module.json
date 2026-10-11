@@ -1,7 +1,7 @@
 {
   "id": "brave-search",
   "name": "Brave 검색",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Brave Search API 로 웹을 검색해, 관련 페이지의 본문 발췌를 제목 · 주소 · 날짜와 함께 돌려줍니다 (LLM Context). 결과는 따로 저장하지 않습니다.",
   "kind": "module",
   "entry": "index.js",
@@ -65,8 +65,8 @@
           "query": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 600,
-            "description": "검색어 (75단어까지)"
+            "maxLength": 400,
+            "description": "검색어 (50단어까지)"
           },
           "freshness": {
             "type": "string",
