@@ -507,7 +507,8 @@ const moduleCreate = (s: ToolServices): BuiltinTool => ({
   title: '모듈 만들기',
   description:
     '새 모듈을 만들어 설치 승인을 요청합니다. files 에 module.json 과 진입점(index.js)을 넣으세요. 형식은 시스템 프롬프트의 모듈 제작 가이드를 따릅니다. ' +
-    '사용자가 승인하면 설치되고 자신에게 연결됩니다 (모듈 연결 방식이 수동이면 연결은 module_connect 로 따로 요청).',
+    '사용자가 승인하면 설치되고 자신에게 연결됩니다 (모듈 연결 방식이 수동이면 연결은 module_connect 로 따로 요청). ' +
+    '자신이 만든 모듈은 같은 id 로 다시 부르면 고칩니다: 파일 전체를 넣고 module.json 의 version 을 올리세요 (고친 판도 점검 · 승인을 거침).',
   input_schema: {
     type: 'object',
     properties: {

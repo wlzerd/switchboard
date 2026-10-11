@@ -37,7 +37,7 @@ export const BASE_PERMISSIONS: readonly PermissionDef[] = [
   { key: 'web.search', label: '웹 검색', group: '네트워크', scope: 'none' },
   { key: 'net.fetch', label: 'HTTP 요청', group: '네트워크', scope: 'host' },
   { key: 'skill.create', label: '스킬 만들기', group: '확장', scope: 'none' },
-  { key: 'module.create', label: '모듈 만들기', group: '확장', scope: 'none' },
+  { key: 'module.create', label: '모듈 만들기 · 수정', group: '확장', scope: 'none' },
   { key: 'module.install', label: '모듈 설치 · 제거', group: '확장', scope: 'none' },
   { key: 'module.connect', label: '모듈 연결', group: '확장', scope: 'target' },
   { key: 'schedule.create', label: '예약 실행 만들기', group: '확장', scope: 'none' },

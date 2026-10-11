@@ -13,15 +13,17 @@ import { ConflictError, LimitError, ModuleError, NotFoundError, PermissionDenied
 import type { AgentLiveStatus, EventBus } from '../events/bus.ts';
 import type { GuardState } from '../guards/guards.ts';
 import type { HookEngine } from '../hooks/engine.ts';
+import type { HookOutcome } from '../hooks/types.ts';
 import { limitChanges, sameLimits, validateLimits, type AgentLimits } from '../limits/limits.ts';
 import type { Logger } from '../log.ts';
 import { connectApproval, readConnectMode } from '../modules/connect-mode.ts';
+import type { Staged } from '../modules/install.ts';
 import { TOOL_NAME_RE } from '../modules/manifest.ts';
 import type { InboundMessage } from '../modules/protocol.ts';
 import type { ModuleRegistry } from '../modules/registry.ts';
 import type { SourceFile } from '../modules/static-check.ts';
 import { folderLabel, validateFolders } from '../permissions/folders.ts';
-import { addAlways, BASE_PERMISSIONS, evaluatePermission, messagePermission, validatePermissionSet, type PermissionDef, type PermissionSet } from '../permissions/policy.ts';
+import { addAlways, BASE_PERMISSIONS, evaluatePermission, messagePermission, validatePermissionSet, type Decision, type PermissionDef, type PermissionSet } from '../permissions/policy.ts';
 import type { ProjectService } from '../projects/service.ts';
 import type { SchedulerService } from '../scheduler/service.ts';
 import type { SettingsService } from '../settings/service.ts';
@@ -1024,11 +1026,20 @@ export class AgentManager {
       this.d.registry.installer.discard(staged.token);
       throw new ValidationError('module_computer_by_agent', '에이전트는 화면 제어 모듈(computer)을 만들 수 없습니다. 화면 제어는 사용자가 기본 제공 모듈을 켜서만 씁니다.');
     }
-    // 같은 id 로 덮어쓰면 다른 에이전트나 사용자가 쓰던 모듈이 바뀔 수 있으므로, 승인 여부와 관계없이 막습니다.
+    // 이미 있는 id 는 이 에이전트가 만든 모듈일 때만 고칩니다. 다른 에이전트나 사용자가 쓰던 모듈은 승인 여부와 관계없이 바꾸지 않습니다.
     const existing = this.d.store.findModule(staged.manifest.id);
-    if (existing) {
+    if (existing && !(existing.kind === 'module' && existing.origin === 'agent' && existing.createdBy === agent.id)) {
       this.d.registry.installer.discard(staged.token);
-      throw new ConflictError('module_exists', `id '${staged.manifest.id}' 모듈(${existing.manifest.name} v${existing.manifest.version})이 이미 있습니다. 다른 id 를 쓰거나, 사용자에게 기존 모듈을 모듈 화면에서 지워 달라고 요청하세요.`);
+      const whose = existing.origin === 'agent' && existing.kind === 'module' ? '다른 에이전트가 만든 모듈이라 고칠 수 없습니다. ' : '';
+      throw new ConflictError('module_exists', `id '${staged.manifest.id}' 모듈(${existing.manifest.name} v${existing.manifest.version})이 이미 있습니다. ${whose}다른 id 를 쓰거나, 사용자에게 기존 모듈을 모듈 화면에서 지워 달라고 요청하세요.`);
+    }
+    if (existing?.status === 'pending') {
+      this.d.registry.installer.discard(staged.token);
+      throw new ConflictError('module_update_pending', `'${existing.manifest.name}'은(는) 설치 승인을 기다리는 중이라 고칠 수 없습니다. 승인되거나 거부된 뒤 다시 하세요.`);
+    }
+    if (existing && !versionAbove(staged.manifest.version, existing.manifest.version)) {
+      this.d.registry.installer.discard(staged.token);
+      throw new ValidationError('module_update_version', `고친 판은 버전을 올려야 합니다. 지금 v${existing.manifest.version}, 받은 v${staged.manifest.version} 입니다. module.json 의 version 을 ${bumpPatch(existing.manifest.version)} 처럼 올려 다시 부르세요.`);
     }
     const problems = staged.report.checks.filter((c) => c.level === 'error');
     if (problems.length > 0) {
@@ -1044,9 +1055,10 @@ export class AgentManager {
     const decision = evaluatePermission(def, agent.permissions['module.install'], staged.manifest.id);
     if (decision.decision === 'deny') {
       this.d.registry.installer.discard(staged.token);
-      throw new PermissionDeniedError('module_install_denied', `${decision.reason} 모듈 파일은 만들었지만 설치하지 않고 지웠습니다.`);
+      throw new PermissionDeniedError('module_install_denied', `${decision.reason} ${existing ? '고친 파일은 적용하지 않고 지웠습니다 (지금 판은 그대로).' : '모듈 파일은 만들었지만 설치하지 않고 지웠습니다.'}`);
     }
     const warns = staged.report.checks.filter((c) => c.level === 'warn').map((c) => `${c.label}: ${c.detail}`);
+    if (existing) return this.updateModule(agent, env, staged, existing, decision, install, warns);
     if (decision.decision === 'allow' && install.decision === 'allow') {
       const row = await this.d.registry.install(staged.token, { kind: 'module', createdBy: agent.id, enabled: true });
       const linked = this.linkCreated(agent.id, row.id);
@@ -1087,6 +1099,55 @@ export class AgentManager {
     return `모듈 '${row.manifest.name}' 설치를 승인받았습니다. 현재 상태: ${status}${linked ? '' : ` · ${NOT_LINKED}`}${warns.length ? ` · 확인할 점: ${warns.join(' / ')}` : ''}`;
   }
 
+  /**
+   * 이 에이전트가 만든 모듈을 고친 판으로 바꿉니다. 승인이 필요하면 승인 뒤에 바꾸고, 그때까지는 지금 판이 그대로 돕니다.
+   * 켜짐 · 꺼짐, 연결, 모듈 설정값은 그대로 둡니다.
+   */
+  private async updateModule(agent: AgentRow, env: ToolEnv, staged: Staged, existing: ModuleRow, decision: Decision, install: HookOutcome, warns: string[]): Promise<string> {
+    const label = `'${existing.manifest.name}'(${existing.id}) v${existing.manifest.version} → v${staged.manifest.version}`;
+    if (decision.decision !== 'allow' || install.decision !== 'allow') {
+      if (env.quiet) {
+        this.d.registry.installer.discard(staged.token);
+        throw new PermissionDeniedError('quiet_needs_approval', '조용한 판단 중에는 승인이 필요한 모듈 수정을 할 수 없습니다. 필요하면 보고에 적어 사용자에게 알리세요.');
+      }
+      const m = staged.manifest;
+      const { wait } = this.d.approvals.request({
+        agentId: agent.id,
+        agentName: agent.name,
+        taskId: env.taskId,
+        threadId: env.threadId,
+        kind: 'module.update',
+        title: `모듈 수정 · ${m.name} v${existing.manifest.version} → v${m.version}`,
+        detail: {
+          permission: 'module.install',
+          target: existing.id,
+          rule: [...(decision.decision === 'ask' ? [decision.reason] : []), ...install.reasons].join(' / ') || '모듈 수정은 승인이 필요합니다.',
+          tool: 'module_create',
+          input: `권한 ${m.permissions.net.length ? `net(${m.permissions.net.join(', ')})` : '없음'} · env ${m.env.map((e) => e.name).join(', ') || '없음'} · 도구 ${m.tools.map((t) => t.name).join(', ') || '없음'}`,
+          moduleId: existing.id,
+          always: false,
+        },
+        signal: env.signal,
+      });
+      const r = await wait;
+      if (r.decision !== 'once' && r.decision !== 'always') {
+        this.d.registry.installer.discard(staged.token);
+        if (r.decision === 'deny') return `사용자가 모듈 ${label} 수정을 거부했습니다. 고친 파일은 지웠고 지금 판이 그대로 돕니다.`;
+        if (r.decision === 'cancelled') return `작업이 취소되어 모듈 ${label} 수정을 적용하지 않았습니다. 지금 판이 그대로 돕니다.`;
+        return r.note ?? `승인 대기 시간이 지나 모듈 ${label} 수정을 적용하지 않았습니다. 지금 판이 그대로 돕니다.`;
+      }
+    }
+    const row = await this.d.registry.install(staged.token, { kind: 'module', createdBy: agent.id, enabled: existing.enabled });
+    this.d.bus.activity({ type: 'module.updated', category: 'module', tone: 'new', who: row.manifest.name, text: `${agent.name}가 고침 · v${existing.manifest.version} → v${row.manifest.version}`, agentId: agent.id, moduleId: row.id });
+    const linked = this.d.store.listAgentModules(agent.id).some((l) => l.moduleId === row.id);
+    return [
+      `모듈 ${label} 로 고쳤습니다.`,
+      ...(row.enabled ? [] : ['모듈이 꺼져 있어 사용자가 모듈 화면에서 켜야 쓸 수 있습니다.']),
+      ...(linked ? [] : ['이 에이전트에는 연결되어 있지 않습니다 (쓰려면 module_connect 로 연결을 요청하세요).']),
+      ...(warns.length ? [`확인할 점: ${warns.join(' / ')}`] : []),
+    ].join(' ');
+  }
+
   shutdown(): void {
     this.stopHeartbeats();
     for (const rt of this.runtimes.values()) rt.cancelAll('서버가 종료되어 작업을 멈췄습니다.');
@@ -1100,6 +1161,16 @@ export class AgentManager {
   moduleRows(): ModuleRow[] {
     return this.d.store.listModules();
   }
+}
+
+/** a 가 b 보다 높은 버전인지 (앞의 숫자 세 자리로 비교하고, 뒤의 -beta 같은 꼬리는 보지 않음) */
+function versionAbove(a: string, b: string): boolean {
+  const nums = (v: string): number[] => (/^(\d+)\.(\d+)\.(\d+)/.exec(v) ?? []).slice(1, 4).map(Number);
+  const [x, y] = [nums(a), nums(b)];
+  for (let i = 0; i < 3; i += 1) {
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+  }
+  return false;
 }
 
 function bumpPatch(v: string): string {
