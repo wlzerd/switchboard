@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AgentEditModal } from '../components/AgentEdit';
 import { hasFiles, MessageFiles, PendingFiles, useAttachments, type Attachments } from '../components/Attach';
 import { Icon } from '../components/Icon';
+import { Markdown } from '../components/Markdown';
 import { shortModel } from '../components/Shell';
 import { Avatar, Modal, ModuleIcon, Seg, StatusLine, Steps, Switch } from '../components/ui';
 import { EFFORT_LABEL } from '../lib/agent';
@@ -370,7 +371,7 @@ function TimelineEntry({ item, agent, tz }: { item: TimelineItem; agent: AgentVi
         <div className="msg-agent">
           <Avatar name={agent.name} color={agent.color} size={28} />
           <div className="text" title={clock(item.createdAt, tz)}>
-            {str(d, 'text')}
+            <Markdown text={str(d, 'text')} />
           </div>
         </div>
       );
@@ -792,7 +793,7 @@ function Chat({ agent, source, threads, onSource }: { agent: AgentView; source: 
             <div key={`live-${taskId}`} className="msg-agent">
               <Avatar name={agent.name} color={agent.color} size={28} />
               <div className="text">
-                {text}
+                <Markdown text={text} />
                 <span className="caret" />
               </div>
             </div>
