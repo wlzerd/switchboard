@@ -55,7 +55,27 @@
 
 ## 빠른 시작
 
-필요한 것: Node.js 22.18 이상 (TypeScript 직접 실행 · node:sqlite · 권한 모델), git (Git 저장소에서 모듈을 설치할 때)
+### 최소 사양
+
+| 항목 | 최소 | 비고 |
+|---|---|---|
+| Node.js | 22.18 이상 (npm 포함) | TypeScript 직접 실행 · `node:sqlite` · 모듈 격리용 권한 모델(`--permission`) |
+| 운영체제 | macOS 또는 Linux | 셸 도구가 `/bin/sh` 를 써서 Windows 는 WSL 에서 띄웁니다 |
+| Claude API | Anthropic API 키 | `api.anthropic.com` 으로 나가는 HTTPS 가 열려 있어야 합니다 |
+| 메모리 | 512MB (모듈을 여럿 켜면 1GB 권장) | 서버 약 70MB, 켜져 돌고 있는 모듈마다 약 40MB (도구만 있는 모듈은 처음 쓸 때 뜸), 빌드할 때는 잠깐 더 씀 |
+| CPU | 1코어 | 모델 추론은 Anthropic 쪽에서 합니다 |
+| 디스크 | 1GB 여유 | 설치 약 270MB (`node_modules`, 빌드 도구 포함), 데이터는 대화 · 첨부 · 스크린샷만큼 늘어남 |
+| 브라우저 | Chrome · Edge 107+, Firefox 104+, Safari 16+ | 웹 화면 |
+| 포트 | 웹 화면용 하나 (기본 `0.0.0.0:8787`) | 이 컴퓨터에서만 쓰면 `.env` 에 `HOST=127.0.0.1` |
+
+기능에 따라 더 필요한 것:
+
+- **git** — Git 저장소에서 모듈을 설치하거나 프로젝트의 git 상태를 볼 때
+- **gh** (GitHub CLI) — GitHub 모듈의 "gh 로그인 가져오기"를 쓸 때
+- **화면 제어** — macOS 는 손쉬운 사용 · 화면 녹화 권한, Linux 는 X11 과 `xdotool` · ImageMagick (화면 없는 서버는 Xvfb, Wayland 는 지원하지 않음)
+- **모듈별 계정 · 키** — Discord · Telegram 봇 토큰, 이메일 IMAP 계정, GitHub 토큰, Brave · Tavily API 키
+
+### 설치
 
 ```bash
 git clone https://github.com/wlzerd/switchboard.git
